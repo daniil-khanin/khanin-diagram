@@ -109,9 +109,29 @@ function createTemplate() {
   ]);
   flowsSheet.autoResizeColumns(1, 4);
 
+  // --- Layout sheet ---
+  var layoutSheet = ss.getSheetByName('KD_Layout');
+  if (!layoutSheet) {
+    layoutSheet = ss.insertSheet('KD_Layout');
+  }
+  layoutSheet.clear();
+  layoutSheet.getRange('A1:D1').setValues([['Node ID', 'X', 'Y', 'Label Above']]).setFontWeight('bold');
+  layoutSheet.getRange('A2:D10').setValues([
+    ['sellers',      -0.50,  -0.10, false],
+    ['freeSellers',  -0.24,  -0.42, true],
+    ['adsFree',       0.08,  -0.52, true],
+    ['leadsFree',     0.40,  -0.42, true],
+    ['customers',    -0.24,   0.32, false],
+    ['adsPaid',       0.08,   0.48, false],
+    ['leadsPaid',     0.40,   0.42, false],
+    ['leadsTotal',    0.68,   0.00, true],
+    ['transactions',  0.36,   0.16, true]
+  ]);
+  layoutSheet.autoResizeColumns(1, 4);
+
   SpreadsheetApp.getUi().alert(
     'Template created!\n\n' +
-    'Sheets added: KD_Settings, KD_Zones, KD_Nodes, KD_Flows\n\n' +
+    'Sheets added: KD_Settings, KD_Zones, KD_Nodes, KD_Flows, KD_Layout\n\n' +
     'Edit the data, then open: Khanin Diagram → Open Diagram'
   );
 }
@@ -184,6 +204,24 @@ function getDiagramData() {
     }
   }
 
+  // Layout
+  var layoutSheet = ss.getSheetByName('KD_Layout');
+  var layout = null;
+  if (layoutSheet) {
+    var lData = layoutSheet.getDataRange().getValues();
+    if (lData.length > 1) {
+      layout = {};
+      for (var p = 1; p < lData.length; p++) {
+        if (!lData[p][0]) continue;
+        layout[String(lData[p][0])] = {
+          x: Number(lData[p][1]),
+          y: Number(lData[p][2]),
+          labelAbove: lData[p][3] === true || String(lData[p][3]).toLowerCase() === 'true'
+        };
+      }
+    }
+  }
+
   return {
     container: {
       label: settings['Container Label'] || 'MAU',
@@ -199,6 +237,7 @@ function getDiagramData() {
     zones: zones,
     nodes: nodes,
     flows: flows,
+    layout: layout,
     animation: { enabled: false }
   };
 }
