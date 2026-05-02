@@ -1,0 +1,1227 @@
+<script>
+/**
+ * KhaninDiagram v1.0.0
+ * Circular flow diagram — standalone JS library
+ * No dependencies. Canvas + SVG export.
+ *
+ * (c) 2026 Daniil Khanin and Khanin Solutions S.L.
+ * License: BSL 1.1 (see LICENSE)
+ */
+(function(root) {
+  'use strict';
+
+  var VERSION = '1.0.0';
+  var RAF = root.requestAnimationFrame || function(cb) { return setTimeout(cb, 16); };
+  var CRAF = root.cancelAnimationFrame || clearTimeout;
+
+  // ─── 2. Utilities ──────────────────────────────────────────────────────────
+
+  function hexToRgb(hex) {
+    if (hex.indexOf('rgb') === 0) {
+      var m = hex.match(/[\d.]+/g);
+      return [+m[0], +m[1], +m[2]];
+    }
+    hex = hex.replace('#', '');
+    if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+    return [parseInt(hex.substring(0,2),16), parseInt(hex.substring(2,4),16), parseInt(hex.substring(4,6),16)];
+  }
+
+  function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+
+  function merge(base, over) {
+    if (!over) return base;
+    var r = {}, k;
+    for (k in base) if (base.hasOwnProperty(k)) r[k] = base[k];
+    for (k in over) if (over.hasOwnProperty(k)) {
+      if (typeof base[k] === 'object' && base[k] !== null && !Array.isArray(base[k]) &&
+          typeof over[k] === 'object' && over[k] !== null && !Array.isArray(over[k])) {
+        r[k] = merge(base[k], over[k]);
+      } else {
+        r[k] = over[k];
+      }
+    }
+    return r;
+  }
+
+  function onRing(angleDeg) {
+    var a = angleDeg * Math.PI / 180;
+    return { x: Math.cos(a), y: Math.sin(a) };
+  }
+
+  // ─── 3. Number formatting ─────────────────────────────────────────────────
+
+  function fmt(v, money) {
+    if (money) {
+      if (v >= 1e6) return "$" + (v/1e6).toFixed(1) + "M";
+      if (v >= 1e3) return "$" + (v/1e3).toFixed(1) + "K";
+      return "$" + v;
+    }
+    if (v >= 1e6) return (v/1e6).toFixed(1) + "M";
+    if (v >= 1e3) return (v/1e3).toFixed(1) + "K";
+    return String(v);
+  }
+
+  // ─── 4. Auto-layout ───────────────────────────────────────────────────────
+
+  function computeLayout(opts) {
+    var nodes = opts.nodes || [];
+    var flows = opts.flows || [];
+    var zones = opts.zones || [];
+    var manual = opts.layout || null;
+
+    // Build adjacency
+    var adj = { container: [] };
+    var inDeg = {};
+    var nodeMap = {};
+    var i, n, f;
+
+    for (i = 0; i < nodes.length; i++) {
+      n = nodes[i];
+      nodeMap[n.id] = n;
+      adj[n.id] = [];
+      inDeg[n.id] = [];
+    }
+
+    for (i = 0; i < flows.length; i++) {
+      f = flows[i];
+      if (!adj[f.from]) adj[f.from] = [];
+      if (!inDeg[f.to]) inDeg[f.to] = [];
+      adj[f.from].push(f.to);
+      inDeg[f.to].push(f.from);
+    }
+
+    // BFS depth from container
+    var depth = { container: 0 };
+    var queue = ['container'];
+    var visited = { container: true };
+    while (queue.length > 0) {
+      var cur = queue.shift();
+      var nb = adj[cur] || [];
+      for (i = 0; i < nb.length; i++) {
+        if (!visited[nb[i]]) {
+          visited[nb[i]] = true;
+          depth[nb[i]] = (depth[cur] || 0) + 1;
+          queue.push(nb[i]);
+        }
+      }
+    }
+
+    var maxDepth = 1;
+    for (var k in depth) {
+      if (k !== 'center' && k !== 'container' && depth[k] > maxDepth) maxDepth = depth[k];
+    }
+
+    // Zone map
+    var zoneMap = {};
+    for (i = 0; i < zones.length; i++) zoneMap[zones[i].id] = zones[i];
+
+    // Group nodes by zone
+    var zoneNodes = {};
+    for (i = 0; i < nodes.length; i++) {
+      n = nodes[i];
+      var zId = n.zone || 'default';
+      if (!zoneNodes[zId]) zoneNodes[zId] = [];
+      zoneNodes[zId].push(n);
+    }
+
+    // Assign positions
+    var positions = {};
+    for (var zoneId in zoneNodes) {
+      if (!zoneNodes.hasOwnProperty(zoneId)) continue;
+      var zi = zoneMap[zoneId];
+      var zNodes = zoneNodes[zoneId];
+      zNodes.sort(function(a, b) { return (depth[a.id] || 1) - (depth[b.id] || 1); });
+
+      for (var j = 0; j < zNodes.length; j++) {
+        var node = zNodes[j];
+        var d = depth[node.id] || 1;
+        var x = lerp(-0.55, 0.55, d / maxDepth);
+        var ySign = 1;
+        if (zi) {
+          var mid = (zi.arc[0] + zi.arc[1]) / 2;
+          ySign = (mid > 90 && mid < 270) ? -1 : 1;
+          // supply arc [180,360] → upper half (y<0), demand [0,180] → lower half (y>0)
+          if (zi.arc[0] >= 180) ySign = -1;
+          else ySign = 1;
+        }
+        var yStep = 0.25;
+        var yBase = ySign * (0.15 + j * yStep);
+        positions[node.id] = { x: x, y: yBase };
+      }
+    }
+
+    // Merge nodes → push toward y=0
+    for (i = 0; i < nodes.length; i++) {
+      n = nodes[i];
+      var sources = inDeg[n.id] || [];
+      var srcZones = {};
+      for (var s = 0; s < sources.length; s++) {
+        var sn = nodeMap[sources[s]];
+        if (sn && sn.zone) srcZones[sn.zone] = true;
+      }
+      if (Object.keys(srcZones).length >= 2 && positions[n.id]) {
+        positions[n.id].y *= 0.3;
+      }
+    }
+
+    // Force relaxation
+    var ids = Object.keys(positions);
+    for (var iter = 0; iter < 3; iter++) {
+      for (i = 0; i < ids.length; i++) {
+        for (var m = i + 1; m < ids.length; m++) {
+          var p1 = positions[ids[i]], p2 = positions[ids[m]];
+          var dx = p2.x - p1.x, dy = p2.y - p1.y;
+          var dd = Math.sqrt(dx*dx + dy*dy);
+          if (dd < 0.22 && dd > 0.001) {
+            var push = (0.22 - dd) * 0.5;
+            var nx = dx/dd, ny = dy/dd;
+            p1.x -= nx * push; p1.y -= ny * push;
+            p2.x += nx * push; p2.y += ny * push;
+          }
+        }
+      }
+      for (i = 0; i < ids.length; i++) {
+        var p = positions[ids[i]];
+        var r = Math.sqrt(p.x*p.x + p.y*p.y);
+        if (r > 0.70) { p.x *= 0.70/r; p.y *= 0.70/r; }
+      }
+    }
+
+    // Label positions
+    var labelAbove = {};
+    for (i = 0; i < ids.length; i++) {
+      labelAbove[ids[i]] = positions[ids[i]].y < 0;
+    }
+
+    // Manual override
+    if (manual) {
+      for (var mk in manual) {
+        if (manual.hasOwnProperty(mk)) {
+          positions[mk] = { x: manual[mk].x, y: manual[mk].y };
+          if (manual[mk].labelAbove !== undefined) {
+            labelAbove[mk] = manual[mk].labelAbove;
+          } else {
+            labelAbove[mk] = manual[mk].y < 0;
+          }
+        }
+      }
+    }
+
+    return { positions: positions, labelAbove: labelAbove };
+  }
+
+  // ─── 5. Canvas primitives ──────────────────────────────────────────────────
+
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  // ─── 6. Bezier math ───────────────────────────────────────────────────────
+
+  function flowControlPoints(p1, p2, curveOffset) {
+    curveOffset = curveOffset || 0;
+    var dx = p2.x - p1.x;
+    var dy = p2.y - p1.y;
+    if (Math.abs(curveOffset) < 0.01) {
+      return {
+        c1: { x: p1.x + dx * 0.5, y: p1.y },
+        c2: { x: p2.x - dx * 0.5, y: p2.y }
+      };
+    }
+    var len = Math.hypot(dx, dy) || 1;
+    var nx = -dy / len, ny = dx / len;
+    var mx = (p1.x + p2.x) / 2 + nx * curveOffset;
+    var my = (p1.y + p2.y) / 2 + ny * curveOffset;
+    return {
+      c1: { x: p1.x * 0.4 + mx * 0.6, y: p1.y * 0.4 + my * 0.6 },
+      c2: { x: p2.x * 0.4 + mx * 0.6, y: p2.y * 0.4 + my * 0.6 }
+    };
+  }
+
+  function bezPoint(p1, c1, c2, p2, t) {
+    var u = 1 - t;
+    return {
+      x: u*u*u*p1.x + 3*u*u*t*c1.x + 3*u*t*t*c2.x + t*t*t*p2.x,
+      y: u*u*u*p1.y + 3*u*u*t*c1.y + 3*u*t*t*c2.y + t*t*t*p2.y
+    };
+  }
+
+  function bezTangent(p1, c1, c2, p2, t) {
+    var u = 1 - t;
+    var x = 3*u*u*(c1.x-p1.x) + 6*u*t*(c2.x-c1.x) + 3*t*t*(p2.x-c2.x);
+    var y = 3*u*u*(c1.y-p1.y) + 6*u*t*(c2.y-c1.y) + 3*t*t*(p2.y-c2.y);
+    var len = Math.hypot(x, y) || 1;
+    return { x: x/len, y: y/len };
+  }
+
+  // ─── 7. Flow drawing ──────────────────────────────────────────────────────
+
+  function drawFlow(ctx, p1, p2, w, color, curveOffset) {
+    var cp = flowControlPoints(p1, p2, curveOffset);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = w;
+    ctx.lineCap = "butt";
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.bezierCurveTo(cp.c1.x, cp.c1.y, cp.c2.x, cp.c2.y, p2.x, p2.y);
+    ctx.stroke();
+  }
+
+  function drawArrowhead(ctx, p1, p2, color, t, size, curveOffset) {
+    t = t || 0.55; size = size || 7; curveOffset = curveOffset || 0;
+    var cp = flowControlPoints(p1, p2, curveOffset);
+    var pt = bezPoint(p1, cp.c1, cp.c2, p2, t);
+    var tan = bezTangent(p1, cp.c1, cp.c2, p2, t);
+    var nx = -tan.y, ny = tan.x;
+    var tip = { x: pt.x + tan.x * size, y: pt.y + tan.y * size };
+    var baseL = { x: pt.x - tan.x*size*0.3 + nx*size*0.7, y: pt.y - tan.y*size*0.3 + ny*size*0.7 };
+    var baseR = { x: pt.x - tan.x*size*0.3 - nx*size*0.7, y: pt.y - tan.y*size*0.3 - ny*size*0.7 };
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(tip.x, tip.y);
+    ctx.lineTo(baseL.x, baseL.y);
+    ctx.lineTo(baseR.x, baseR.y);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawParticles(ctx, p1, p2, color, phase, count, curveOffset, S) {
+    count = count || 3; curveOffset = curveOffset || 0;
+    var cp = flowControlPoints(p1, p2, curveOffset);
+    ctx.fillStyle = color;
+    for (var i = 0; i < count; i++) {
+      var t = (phase + i / count) % 1;
+      var pt = bezPoint(p1, cp.c1, cp.c2, p2, t);
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 2 * S, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // ─── 8. Node + label drawing ──────────────────────────────────────────────
+
+  function nodeHeight(value, vMin, vMax, S) {
+    var s = Math.sqrt(value), sMin = Math.sqrt(vMin), sMax = Math.sqrt(vMax);
+    var t = sMax > sMin ? (s - sMin) / (sMax - sMin) : 0.5;
+    return (20 + t * 60) * S;
+  }
+
+  function mergeNodeHeight(value, vMin, vMax, S) {
+    return nodeHeight(value, vMin, vMax, S) * 1.35;
+  }
+
+  function flowWidth(value, vMin, vMax, S) {
+    var s = Math.sqrt(value), sMin = Math.sqrt(vMin), sMax = Math.sqrt(vMax);
+    var t = sMax > sMin ? (s - sMin) / (sMax - sMin) : 0.5;
+    return (2.5 + t * 24) * S;
+  }
+
+  function drawNode(ctx, n, h, S, highlight) {
+    var w = n.isMerge ? 12*S : 7*S;
+    ctx.fillStyle = n.color;
+    if (highlight) {
+      ctx.shadowColor = n.color;
+      ctx.shadowBlur = 12;
+    }
+    roundRect(ctx, n.px - w/2, n.py - h/2, w, h, w/2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    // Merge node edge highlights
+    if (n.isMerge) {
+      ctx.fillStyle = "rgba(255,255,255,0.18)";
+      roundRect(ctx, n.px - w/2, n.py - h/2, 3, h, 1.5);
+      ctx.fill();
+      ctx.fillStyle = "rgba(0,0,0,0.10)";
+      roundRect(ctx, n.px + w/2 - 3, n.py - h/2, 3, h, 1.5);
+      ctx.fill();
+    }
+  }
+
+  function drawLabel(ctx, n, h, S, colors, formatFn) {
+    var above = n.labelAbove !== false;
+    var g1 = 24*S, g2 = 14*S, g3 = 12*S, g4 = 20*S;
+    var tyTitle = above ? n.py - h/2 - g1 : n.py + h/2 + g2;
+    var tyValue = above ? n.py - h/2 - g2 + 2*S : n.py + h/2 + g1 + 6*S;
+    var tyDelta = above ? n.py + h/2 + g3 : n.py - h/2 - 6*S;
+    var tySub   = above ? n.py + h/2 + g4 + 4*S : n.py - h/2 - g2 - 6*S;
+
+    var fTitle = Math.round(10*S);
+    var fValue = Math.round(12*S);
+    var fDelta = Math.round(8*S);
+    var fSub   = Math.round(8*S);
+    var ff = '-apple-system, BlinkMacSystemFont, Inter, sans-serif';
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = colors.text;
+    ctx.font = "600 " + fTitle + "px " + ff;
+    ctx.fillText(n.label, n.px, tyTitle);
+
+    ctx.font = "700 " + fValue + "px " + ff;
+    ctx.fillText(formatFn(n.value, n.money), n.px, tyValue);
+
+    var up = n.delta >= 0;
+    ctx.fillStyle = up ? colors.up : colors.down;
+    ctx.font = "600 " + fDelta + "px " + ff;
+    ctx.fillText((up ? "\u25B2 +" : "\u25BC ") + Math.abs(n.delta).toFixed(1) + "%", n.px, tyDelta);
+
+    if (n.subtitle) {
+      ctx.fillStyle = colors.muted;
+      ctx.font = "400 " + fSub + "px " + ff;
+      ctx.fillText(n.subtitle, n.px, tySub);
+    }
+  }
+
+  // ─── 9. Ring drawing ──────────────────────────────────────────────────────
+
+  function drawRing(ctx, cx, cy, R, S, opts, bgColor) {
+    var zones = opts.zones || [];
+    var colors = opts.colors;
+    var ff = '-apple-system, BlinkMacSystemFont, Inter, sans-serif';
+
+    ctx.lineCap = "butt";
+
+    // Zone arcs (thick colored bands)
+    for (var i = 0; i < zones.length; i++) {
+      var z = zones[i];
+      var rgb = hexToRgb(z.color);
+      var arcColor = 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',0.50)';
+      ctx.strokeStyle = arcColor;
+      ctx.lineWidth = 7 * S;
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, z.arc[0] * Math.PI / 180, z.arc[1] * Math.PI / 180);
+      ctx.stroke();
+    }
+
+    // Ring outline
+    ctx.strokeStyle = colors.ring;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Zone labels (pill badges on ring)
+    for (i = 0; i < zones.length; i++) {
+      var zone = zones[i];
+      var midDeg = (zone.arc[0] + zone.arc[1]) / 2;
+      // Place label at a visually nice angle on the arc
+      var labelAngleDeg = zone.labelAngle !== undefined ? zone.labelAngle : midDeg;
+      var a = labelAngleDeg * Math.PI / 180;
+      var lx = cx + Math.cos(a) * R;
+      var ly = cy + Math.sin(a) * R;
+
+      ctx.font = "700 " + Math.round(9*S) + "px " + ff;
+      var tw = ctx.measureText(zone.label).width;
+      var padX = 8*S, padY = 4*S;
+      // Pill background
+      ctx.fillStyle = bgColor || '#FAF8F3';
+      roundRect(ctx, lx - tw/2 - padX, ly - 7*S - padY, tw + padX*2, 14*S + padY*2, 9*S);
+      ctx.fill();
+      // Pill border
+      var zc = zone.color;
+      ctx.strokeStyle = zc;
+      ctx.lineWidth = 1;
+      roundRect(ctx, lx - tw/2 - padX, ly - 7*S - padY, tw + padX*2, 14*S + padY*2, 9*S);
+      ctx.stroke();
+      // Text
+      ctx.fillStyle = zc;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(zone.label, lx, ly);
+    }
+    ctx.textBaseline = "alphabetic";
+
+    // Container (MAU) label — to the left of the ring
+    var container = opts.container;
+    if (container) {
+      var formatFn = opts._fmt || fmt;
+      // Leader line
+      ctx.strokeStyle = colors.muted;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx - R - 12*S, cy);
+      ctx.lineTo(cx - R, cy);
+      ctx.stroke();
+      // Dot on ring
+      ctx.fillStyle = colors.ring;
+      ctx.beginPath();
+      ctx.arc(cx - R, cy, 2.5*S, 0, Math.PI * 2);
+      ctx.fill();
+
+      var mg = 18 * S;
+      ctx.textAlign = "right";
+      ctx.fillStyle = colors.muted;
+      ctx.font = "500 " + Math.round(8*S) + "px " + ff;
+      ctx.fillText("CONTAINER", cx - R - mg, cy - 16*S);
+
+      ctx.fillStyle = colors.text;
+      ctx.font = "600 " + Math.round(11*S) + "px " + ff;
+      ctx.fillText(container.label, cx - R - mg, cy);
+
+      ctx.font = "700 " + Math.round(18*S) + "px " + ff;
+      ctx.fillText(formatFn(container.value, container.format === 'money'), cx - R - mg, cy + 18*S);
+
+      if (container.delta !== undefined) {
+        var up = container.delta >= 0;
+        ctx.fillStyle = up ? colors.up : colors.down;
+        ctx.font = "600 " + Math.round(9*S) + "px " + ff;
+        ctx.fillText((up ? "\u25B2 +" : "\u25BC ") + Math.abs(container.delta).toFixed(1) + "%", cx - R - mg, cy + 32*S);
+      }
+    }
+  }
+
+  // ─── 10. Center bullseye ──────────────────────────────────────────────────
+
+  function drawCenter(ctx, cx, cy, r, center, S, colors, bgColor, formatFn) {
+    if (!center) return;
+    var ff = '-apple-system, BlinkMacSystemFont, Inter, sans-serif';
+
+    // Glow
+    var grad = ctx.createRadialGradient(cx, cy, r * 0.4, cx, cy, r * 1.7);
+    grad.addColorStop(0, 'rgba(74,124,92,0.18)');
+    grad.addColorStop(1, 'rgba(74,124,92,0)');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 1.7, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Circle
+    ctx.fillStyle = colors.centerFill;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Text
+    var textColor = bgColor || '#FAF8F3';
+    ctx.textAlign = "center";
+    ctx.fillStyle = textColor;
+    ctx.font = "600 " + Math.round(9*S) + "px " + ff;
+    ctx.fillText(center.label.toUpperCase(), cx, cy - 10*S);
+
+    ctx.font = "700 " + Math.round(18*S) + "px " + ff;
+    ctx.fillText(formatFn(center.value, center.format === 'money'), cx, cy + 8*S);
+
+    if (center.delta !== undefined) {
+      var up = center.delta >= 0;
+      ctx.fillStyle = 'rgba(250,248,243,0.75)';
+      ctx.font = "600 " + Math.round(8*S) + "px " + ff;
+      ctx.fillText((up ? "\u25B2 +" : "\u25BC ") + Math.abs(center.delta).toFixed(1) + "%", cx, cy + 22*S);
+    }
+  }
+
+  // ─── 11. Hit testing + tooltip ────────────────────────────────────────────
+
+  function hitTest(mx, my, computed) {
+    var nodes = computed.nodes;
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      var hitW = 40;
+      if (mx >= n.px - hitW && mx <= n.px + hitW &&
+          my >= n.py - n.h/2 - 30 && my <= n.py + n.h/2 + 30) {
+        return n.id;
+      }
+    }
+    // Bullseye
+    var dx = mx - computed.cx, dy = my - computed.cy;
+    if (Math.sqrt(dx*dx + dy*dy) <= computed.rRev * 1.5) return '__center__';
+    return null;
+  }
+
+  // ─── 12. Render orchestrator ──────────────────────────────────────────────
+
+  function buildGroupColors(colors) {
+    return {
+      supply:  colors.supply  || '#A89B7E',
+      demand:  colors.demand  || '#3A4047',
+      output:  colors.output  || colors.ring,
+      revenue: colors.revenue || colors.centerFill,
+      merge:   colors.merge   || '#C97C3F',
+      flowSupply:  colors.flowSupply  || 'rgba(168,155,126,0.45)',
+      flowDemand:  colors.flowDemand  || 'rgba(58,64,71,0.32)',
+      flowRevenue: colors.flowRevenue || 'rgba(74,124,92,0.45)',
+      flowDirect:  colors.flowDirect  || 'rgba(58,64,71,0.45)',
+      flowMerge:   colors.flowMerge   || 'rgba(58,64,71,0.30)'
+    };
+  }
+
+  function nodeColor(group, gc) {
+    return gc[group] || gc.supply;
+  }
+
+  function flowColorFor(kind, gc) {
+    if (kind === "revenue") return gc.flowRevenue;
+    if (kind === "demand")  return gc.flowDemand;
+    if (kind === "direct")  return gc.flowDirect;
+    if (kind === "merge")   return gc.flowMerge;
+    return gc.flowSupply;
+  }
+
+  function flowArrowColor(kind, gc) {
+    if (kind === "revenue") return gc.revenue;
+    if (kind === "supply")  return gc.supply;
+    if (kind === "demand")  return gc.demand;
+    if (kind === "direct")  return gc.demand;
+    if (kind === "merge")   return '#6B7178';
+    return gc.demand;
+  }
+
+  function render(state) {
+    var cv = state.canvas;
+    var ctx = state.ctx;
+    var opts = state.opts;
+    var wrapper = state.wrapper;
+    var dpr = root.devicePixelRatio || 1;
+    var rect = wrapper.getBoundingClientRect();
+    var W = rect.width;
+    var H = W * (opts.aspectRatio || 0.9);
+    if (H < 500) H = 500;
+    if (H > 950) H = 950;
+    wrapper.style.height = H + 'px';
+
+    cv.width = W * dpr;
+    cv.height = H * dpr;
+    cv.style.width = W + 'px';
+    cv.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    var S = clamp(W / 860, 0.55, 1.2);
+    state.S = S;
+
+    ctx.clearRect(0, 0, W, H);
+
+    var colors = opts.colors;
+    var gc = buildGroupColors(colors);
+    var formatFn = opts.format || fmt;
+    opts._fmt = formatFn;
+
+    var mauLabelW = 130 * S;
+    var cx = W / 2 + mauLabelW * 0.22;
+    var cy = H / 2;
+    var R = Math.min(H * 0.65, (W - mauLabelW) * 0.46);
+
+    var REVENUE_RADIUS_FRAC = 0.19;
+    var rRev = R * REVENUE_RADIUS_FRAC;
+
+    // Build node data
+    var nodes = opts.nodes || [];
+    var flows = opts.flows || [];
+    var layout = state.layout;
+    var positions = layout.positions;
+    var nodeMap = {};
+    var vals = [];
+
+    for (var i = 0; i < nodes.length; i++) {
+      var nd = nodes[i];
+      nodeMap[nd.id] = nd;
+      vals.push(nd.value);
+    }
+    if (opts.center) vals.push(opts.center.value);
+    var vMin = Math.min.apply(null, vals);
+    var vMax = Math.max.apply(null, vals);
+
+    // Compute pixel positions for nodes
+    var N = [];
+    for (i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      var pos = positions[n.id];
+      if (!pos) continue;
+
+      var group = n.group || n.zone || 'supply';
+      var isMerge = group === 'merge';
+      var h = isMerge ? mergeNodeHeight(n.value, vMin, vMax, S) : nodeHeight(n.value, vMin, vMax, S);
+
+      N.push({
+        id: n.id,
+        label: n.label,
+        value: n.value,
+        delta: n.delta,
+        subtitle: n.subtitle,
+        money: n.format === 'money',
+        group: group,
+        isMerge: isMerge,
+        color: nodeColor(group, gc),
+        px: cx + pos.x * R,
+        py: cy + pos.y * R,
+        h: h,
+        labelAbove: layout.labelAbove[n.id] !== undefined ? layout.labelAbove[n.id] : pos.y < 0
+      });
+    }
+
+    // Store computed data for hit testing
+    state.computed = { nodes: N, cx: cx, cy: cy, R: R, rRev: rRev };
+
+    // Entry points on ring
+    var entrySupply = onRing(200);
+    var entryDirect = onRing(0);
+    var supplyEntry = { x: cx + entrySupply.x * R, y: cy + entrySupply.y * R };
+    var directEntry = { x: cx + entryDirect.x * R, y: cy + entryDirect.y * R };
+
+    // Custom entry points
+    var entryPoints = opts.entryPoints || {};
+
+    // --- DRAW ---
+
+    // 1. Ring (arcs, outline, zone labels, container label)
+    drawRing(ctx, cx, cy, R, S, opts, colors.background || '#FAF8F3');
+
+    // 2. Entry markers
+    ctx.fillStyle = colors.ring;
+    ctx.beginPath(); ctx.arc(supplyEntry.x, supplyEntry.y, 4*S, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(directEntry.x, directEntry.y, 4*S, 0, Math.PI*2); ctx.fill();
+
+    var mergeHalfWidth = 6 * S;
+    var revCenter = { x: cx, y: cy };
+
+    // 3. Build flow segments
+    var nLookup = {};
+    for (i = 0; i < N.length; i++) nLookup[N[i].id] = N[i];
+
+    var flowSegs = [];
+    for (i = 0; i < flows.length; i++) {
+      var f = flows[i];
+      var from = f.from, to = f.to, val = f.value;
+      var kind = f.group || f.kind || 'supply';
+      var p1, p2;
+
+      if (from === 'container') {
+        if (entryPoints[to]) {
+          var ep = onRing(entryPoints[to]);
+          p1 = { x: cx + ep.x * R, y: cy + ep.y * R };
+        } else if (kind === 'direct') {
+          p1 = directEntry;
+        } else {
+          p1 = supplyEntry;
+        }
+      } else if (nLookup[from]) {
+        p1 = { x: nLookup[from].px, y: nLookup[from].py };
+      } else { continue; }
+
+      if (to === 'center') {
+        p2 = revCenter;
+      } else if (nLookup[to] && nLookup[to].isMerge) {
+        var supplyFlow = (kind === 'supply' || kind === 'demand');
+        var offset = supplyFlow ? -mergeHalfWidth : mergeHalfWidth;
+        p2 = { x: nLookup[to].px + offset, y: nLookup[to].py };
+      } else if (nLookup[to]) {
+        p2 = { x: nLookup[to].px, y: nLookup[to].py };
+      } else { continue; }
+
+      flowSegs.push({ from: from, to: to, val: val, kind: kind, p1: p1, p2: p2, curve: f.curve || 0 });
+    }
+
+    // Determine highlight group
+    var highlightGroup = null;
+    if (state.hoveredNode && state.hoveredNode !== '__center__') {
+      var hNode = nLookup[state.hoveredNode];
+      if (hNode) highlightGroup = hNode.group;
+    }
+
+    // 4. Draw flows
+    for (i = 0; i < flowSegs.length; i++) {
+      var fs = flowSegs[i];
+      var alpha = 1;
+      if (highlightGroup && fs.kind !== highlightGroup && fs.kind !== 'direct') alpha = 0.3;
+      ctx.globalAlpha = alpha;
+      drawFlow(ctx, fs.p1, fs.p2, flowWidth(fs.val, vMin, vMax, S), flowColorFor(fs.kind, gc), fs.curve);
+      ctx.globalAlpha = 1;
+    }
+
+    // 5. Arrowheads & particles
+    for (i = 0; i < flowSegs.length; i++) {
+      var fs2 = flowSegs[i];
+      var alpha2 = 1;
+      if (highlightGroup && fs2.kind !== highlightGroup && fs2.kind !== 'direct') alpha2 = 0.3;
+      ctx.globalAlpha = alpha2;
+      drawArrowhead(ctx, fs2.p1, fs2.p2, flowArrowColor(fs2.kind, gc), 0.55, 5*S, fs2.curve);
+      if (opts.animation && opts.animation.enabled) {
+        drawParticles(ctx, fs2.p1, fs2.p2, flowArrowColor(fs2.kind, gc), state.animPhase, 3, fs2.curve, S);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // 6. Draw nodes
+    for (i = 0; i < N.length; i++) {
+      var nn = N[i];
+      var hl = (state.hoveredNode === nn.id);
+      drawNode(ctx, nn, nn.h, S, hl);
+    }
+
+    // 7. Center bullseye
+    drawCenter(ctx, cx, cy, rRev, opts.center, S, colors, colors.background || '#FAF8F3', formatFn);
+
+    // 8. Labels
+    for (i = 0; i < N.length; i++) {
+      drawLabel(ctx, N[i], N[i].h, S, colors, formatFn);
+    }
+  }
+
+  // ─── 13. Animation ────────────────────────────────────────────────────────
+
+  function startAnimation(state) {
+    if (state.animRunning) return;
+    state.animRunning = true;
+    state.lastTs = 0;
+
+    function tick(ts) {
+      if (!state.animRunning) return;
+      var dt = state.lastTs ? (ts - state.lastTs) / 1000 : 0;
+      state.lastTs = ts;
+      var speed = (state.opts.animation && state.opts.animation.speed) || 0.18;
+      state.animPhase = (state.animPhase + dt * speed) % 1;
+      render(state);
+      state.rafId = RAF(tick);
+    }
+    state.rafId = RAF(tick);
+  }
+
+  function stopAnimation(state) {
+    state.animRunning = false;
+    if (state.rafId) { CRAF(state.rafId); state.rafId = null; }
+  }
+
+  // ─── 14. SVG export ───────────────────────────────────────────────────────
+
+  function SvgBuilder(w, h) {
+    this.w = w; this.h = h;
+    this.defs = [];
+    this.els = [];
+    this._groupStack = [];
+  }
+  SvgBuilder.prototype.circle = function(cx, cy, r, fill, stroke, sw) {
+    var a = 'cx="'+cx+'" cy="'+cy+'" r="'+r+'"';
+    a += fill ? ' fill="'+fill+'"' : ' fill="none"';
+    if (stroke) a += ' stroke="'+stroke+'" stroke-width="'+(sw||1)+'"';
+    this.els.push('<circle '+a+'/>');
+  };
+  SvgBuilder.prototype.arc = function(cx, cy, r, startDeg, endDeg, sw, color) {
+    if (endDeg - startDeg >= 360) {
+      this.circle(cx, cy, r, null, color, sw);
+      return;
+    }
+    var sr = startDeg * Math.PI / 180, er = endDeg * Math.PI / 180;
+    var x1 = cx + r*Math.cos(sr), y1 = cy + r*Math.sin(sr);
+    var x2 = cx + r*Math.cos(er), y2 = cy + r*Math.sin(er);
+    var la = (endDeg - startDeg) > 180 ? 1 : 0;
+    var d = 'M '+x1.toFixed(1)+' '+y1.toFixed(1)+' A '+r+' '+r+' 0 '+la+' 1 '+x2.toFixed(1)+' '+y2.toFixed(1);
+    this.els.push('<path d="'+d+'" fill="none" stroke="'+color+'" stroke-width="'+sw+'" stroke-linecap="butt"/>');
+  };
+  SvgBuilder.prototype.rect = function(x, y, w, h, rx, fill, stroke, sw) {
+    var a = 'x="'+x+'" y="'+y+'" width="'+w+'" height="'+h+'"';
+    if (rx) a += ' rx="'+rx+'"';
+    a += fill ? ' fill="'+fill+'"' : ' fill="none"';
+    if (stroke) a += ' stroke="'+stroke+'" stroke-width="'+(sw||1)+'"';
+    this.els.push('<rect '+a+'/>');
+  };
+  SvgBuilder.prototype.text = function(x, y, content, opts) {
+    var size = opts.size || 12;
+    var weight = opts.weight || 'normal';
+    var color = opts.color || '#000';
+    var anchor = opts.align === 'right' ? 'end' : opts.align === 'left' ? 'start' : 'middle';
+    var escaped = String(content).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    this.els.push('<text x="'+x+'" y="'+y+'" font-family="-apple-system,BlinkMacSystemFont,Inter,sans-serif" font-size="'+size+'" font-weight="'+weight+'" fill="'+color+'" text-anchor="'+anchor+'" dominant-baseline="central">'+escaped+'</text>');
+  };
+  SvgBuilder.prototype.path = function(d, fill, stroke, sw, opacity) {
+    var a = 'd="'+d+'" fill="'+(fill||'none')+'"';
+    if (stroke) a += ' stroke="'+stroke+'" stroke-width="'+sw+'" stroke-linecap="butt"';
+    if (opacity !== undefined) a += ' opacity="'+opacity+'"';
+    this.els.push('<path '+a+'/>');
+  };
+  SvgBuilder.prototype.group = function(opacity) {
+    this.els.push('<g' + (opacity !== undefined ? ' opacity="'+opacity+'"' : '') + '>');
+  };
+  SvgBuilder.prototype.groupEnd = function() { this.els.push('</g>'); };
+  SvgBuilder.prototype.addDef = function(s) { this.defs.push(s); };
+  SvgBuilder.prototype.toString = function() {
+    var d = this.defs.length ? '<defs>\n'+this.defs.join('\n')+'\n</defs>\n' : '';
+    return '<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+this.w+' '+this.h+'" width="'+this.w+'" height="'+this.h+'">\n<style>text{user-select:none}</style>\n'+d+this.els.join('\n')+'\n</svg>';
+  };
+
+  function renderToSVG(state) {
+    var opts = state.opts;
+    var W = state.wrapper.getBoundingClientRect().width || 860;
+    var H = W * (opts.aspectRatio || 0.9);
+    if (H < 500) H = 500; if (H > 950) H = 950;
+    var S = clamp(W / 860, 0.55, 1.2);
+    var colors = opts.colors;
+    var gc = buildGroupColors(colors);
+    var formatFn = opts.format || fmt;
+
+    var mauLabelW = 130 * S;
+    var cx = W / 2 + mauLabelW * 0.22;
+    var cy = H / 2;
+    var R = Math.min(H * 0.65, (W - mauLabelW) * 0.46);
+    var rRev = R * 0.19;
+
+    var svg = new SvgBuilder(W, H);
+
+    // Background
+    var bg = colors.background || '#FAF8F3';
+    svg.rect(0, 0, W, H, 0, bg);
+
+    // Zone arcs
+    var zones = opts.zones || [];
+    for (var i = 0; i < zones.length; i++) {
+      var z = zones[i];
+      var rgb = hexToRgb(z.color);
+      svg.arc(cx, cy, R, z.arc[0], z.arc[1], 7*S, 'rgba('+rgb[0]+','+rgb[1]+','+rgb[2]+',0.50)');
+    }
+
+    // Ring outline
+    svg.circle(cx, cy, R, null, colors.ring, 2);
+
+    // Zone labels
+    for (i = 0; i < zones.length; i++) {
+      var zone = zones[i];
+      var midDeg = zone.labelAngle !== undefined ? zone.labelAngle : (zone.arc[0] + zone.arc[1]) / 2;
+      var a = midDeg * Math.PI / 180;
+      var lx = cx + Math.cos(a) * R;
+      var ly = cy + Math.sin(a) * R;
+      var padX = 8*S, padY = 4*S;
+      var tw = zone.label.length * 6 * S;
+      svg.rect(lx - tw/2 - padX, ly - 7*S - padY, tw + padX*2, 14*S + padY*2, 9*S, bg, zone.color, 1);
+      svg.text(lx, ly, zone.label, { size: Math.round(9*S), weight: '700', color: zone.color });
+    }
+
+    // Container label
+    var container = opts.container;
+    if (container) {
+      var mg = 18*S;
+      svg.text(cx - R - mg, cy - 16*S, "CONTAINER", { size: Math.round(8*S), weight: '500', color: colors.muted, align: 'right' });
+      svg.text(cx - R - mg, cy, container.label, { size: Math.round(11*S), weight: '600', color: colors.text, align: 'right' });
+      svg.text(cx - R - mg, cy + 18*S, formatFn(container.value, container.format === 'money'), { size: Math.round(18*S), weight: '700', color: colors.text, align: 'right' });
+      if (container.delta !== undefined) {
+        var up = container.delta >= 0;
+        svg.text(cx - R - mg, cy + 32*S, (up?"\u25B2 +":"\u25BC ")+Math.abs(container.delta).toFixed(1)+"%", { size: Math.round(9*S), weight: '600', color: up?colors.up:colors.down, align: 'right' });
+      }
+    }
+
+    // Entry markers
+    var entrySupply = onRing(200);
+    var entryDirect = onRing(0);
+    svg.circle(cx + entrySupply.x*R, cy + entrySupply.y*R, 4*S, colors.ring);
+    svg.circle(cx + entryDirect.x*R, cy + entryDirect.y*R, 4*S, colors.ring);
+
+    // Nodes and flows
+    var nodes = opts.nodes || [];
+    var flows = opts.flows || [];
+    var layout = state.layout;
+    var positions = layout.positions;
+    var nodeMap = {};
+    var vals = [];
+    for (i = 0; i < nodes.length; i++) { nodeMap[nodes[i].id] = nodes[i]; vals.push(nodes[i].value); }
+    if (opts.center) vals.push(opts.center.value);
+    var vMin = Math.min.apply(null, vals), vMax = Math.max.apply(null, vals);
+
+    var nLookup = {};
+    for (i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      var pos = positions[n.id];
+      if (!pos) continue;
+      var group = n.group || n.zone || 'supply';
+      nLookup[n.id] = {
+        id: n.id, label: n.label, value: n.value, delta: n.delta,
+        subtitle: n.subtitle, money: n.format === 'money',
+        group: group, isMerge: group === 'merge',
+        color: nodeColor(group, gc),
+        px: cx + pos.x * R, py: cy + pos.y * R,
+        h: (group === 'merge') ? mergeNodeHeight(n.value, vMin, vMax, S) : nodeHeight(n.value, vMin, vMax, S),
+        labelAbove: layout.labelAbove[n.id]
+      };
+    }
+
+    var supplyEntry = { x: cx + entrySupply.x*R, y: cy + entrySupply.y*R };
+    var directEntry = { x: cx + entryDirect.x*R, y: cy + entryDirect.y*R };
+    var mergeHalfWidth = 6*S;
+    var entryPoints = opts.entryPoints || {};
+
+    // Draw flows as SVG paths
+    for (i = 0; i < flows.length; i++) {
+      var f = flows[i];
+      var kind = f.group || f.kind || 'supply';
+      var p1, p2;
+
+      if (f.from === 'container') {
+        if (entryPoints[f.to]) {
+          var ep = onRing(entryPoints[f.to]);
+          p1 = { x: cx + ep.x*R, y: cy + ep.y*R };
+        } else {
+          p1 = kind === 'direct' ? directEntry : supplyEntry;
+        }
+      } else if (nLookup[f.from]) {
+        p1 = { x: nLookup[f.from].px, y: nLookup[f.from].py };
+      } else continue;
+
+      if (f.to === 'center') {
+        p2 = { x: cx, y: cy };
+      } else if (nLookup[f.to] && nLookup[f.to].isMerge) {
+        var sFlow = (kind === 'supply' || kind === 'demand');
+        p2 = { x: nLookup[f.to].px + (sFlow ? -mergeHalfWidth : mergeHalfWidth), y: nLookup[f.to].py };
+      } else if (nLookup[f.to]) {
+        p2 = { x: nLookup[f.to].px, y: nLookup[f.to].py };
+      } else continue;
+
+      var curveOff = f.curve || 0;
+      var cp = flowControlPoints(p1, p2, curveOff);
+      var d = 'M '+p1.x.toFixed(1)+' '+p1.y.toFixed(1)+' C '+cp.c1.x.toFixed(1)+' '+cp.c1.y.toFixed(1)+','+cp.c2.x.toFixed(1)+' '+cp.c2.y.toFixed(1)+','+p2.x.toFixed(1)+' '+p2.y.toFixed(1);
+      svg.path(d, null, flowColorFor(kind, gc), flowWidth(f.value, vMin, vMax, S).toFixed(1));
+
+      // Arrowhead
+      var at = 0.55, sz = 5*S;
+      var pt = bezPoint(p1, cp.c1, cp.c2, p2, at);
+      var tan = bezTangent(p1, cp.c1, cp.c2, p2, at);
+      var nx = -tan.y, ny = tan.x;
+      var tip = { x: pt.x + tan.x*sz, y: pt.y + tan.y*sz };
+      var bL = { x: pt.x - tan.x*sz*0.3 + nx*sz*0.7, y: pt.y - tan.y*sz*0.3 + ny*sz*0.7 };
+      var bR = { x: pt.x - tan.x*sz*0.3 - nx*sz*0.7, y: pt.y - tan.y*sz*0.3 - ny*sz*0.7 };
+      var ad = 'M '+tip.x.toFixed(1)+' '+tip.y.toFixed(1)+' L '+bL.x.toFixed(1)+' '+bL.y.toFixed(1)+' L '+bR.x.toFixed(1)+' '+bR.y.toFixed(1)+' Z';
+      svg.path(ad, flowArrowColor(kind, gc));
+    }
+
+    // Draw nodes
+    for (i = 0; i < nodes.length; i++) {
+      var nn = nLookup[nodes[i].id];
+      if (!nn) continue;
+      var nw = nn.isMerge ? 12*S : 7*S;
+      svg.rect(nn.px - nw/2, nn.py - nn.h/2, nw, nn.h, nw/2, nn.color);
+
+      // Label
+      var above = nn.labelAbove !== false;
+      var g1 = 24*S, g2 = 14*S, g3 = 12*S, g4 = 20*S;
+      var tyTitle = above ? nn.py - nn.h/2 - g1 : nn.py + nn.h/2 + g2;
+      var tyValue = above ? nn.py - nn.h/2 - g2 + 2*S : nn.py + nn.h/2 + g1 + 6*S;
+      var tyDelta = above ? nn.py + nn.h/2 + g3 : nn.py - nn.h/2 - 6*S;
+
+      svg.text(nn.px, tyTitle, nn.label, { size: Math.round(10*S), weight: '600', color: colors.text });
+      svg.text(nn.px, tyValue, formatFn(nn.value, nn.money), { size: Math.round(12*S), weight: '700', color: colors.text });
+      var up2 = nn.delta >= 0;
+      svg.text(nn.px, tyDelta, (up2?"\u25B2 +":"\u25BC ")+Math.abs(nn.delta).toFixed(1)+"%", { size: Math.round(8*S), weight: '600', color: up2?colors.up:colors.down });
+      if (nn.subtitle) {
+        var tySub = above ? nn.py + nn.h/2 + g4 + 4*S : nn.py - nn.h/2 - g2 - 6*S;
+        svg.text(nn.px, tySub, nn.subtitle, { size: Math.round(8*S), weight: '400', color: colors.muted });
+      }
+    }
+
+    // Center bullseye
+    if (opts.center) {
+      svg.addDef('<radialGradient id="kd-glow"><stop offset="24%" stop-color="rgba(74,124,92,0.18)"/><stop offset="100%" stop-color="rgba(74,124,92,0)"/></radialGradient>');
+      svg.circle(cx, cy, rRev*1.7, 'url(#kd-glow)');
+      svg.circle(cx, cy, rRev, colors.centerFill);
+      svg.text(cx, cy - 10*S, opts.center.label.toUpperCase(), { size: Math.round(9*S), weight: '600', color: bg });
+      svg.text(cx, cy + 8*S, formatFn(opts.center.value, opts.center.format === 'money'), { size: Math.round(18*S), weight: '700', color: bg });
+      if (opts.center.delta !== undefined) {
+        var up3 = opts.center.delta >= 0;
+        svg.text(cx, cy + 22*S, (up3?"\u25B2 +":"\u25BC ")+Math.abs(opts.center.delta).toFixed(1)+"%", { size: Math.round(8*S), weight: '600', color: 'rgba(250,248,243,0.75)' });
+      }
+    }
+
+    return svg.toString();
+  }
+
+  // ─── 15. Public API ────────────────────────────────────────────────────────
+
+  var DEFAULTS = {
+    container: null,
+    center: null,
+    zones: [],
+    nodes: [],
+    flows: [],
+    layout: null,
+    entryPoints: {},
+    colors: {
+      ring: '#2A2A2A',
+      background: '#FAF8F3',
+      up: '#2D7A4A',
+      down: '#C44545',
+      text: '#2A2A2A',
+      muted: '#8A8478',
+      centerFill: '#4A7C5C',
+      supply: '#A89B7E',
+      demand: '#3A4047',
+      output: '#2A2A2A',
+      revenue: '#4A7C5C',
+      merge: '#C97C3F'
+    },
+    animation: { enabled: true, speed: 0.18 },
+    aspectRatio: 0.9,
+    format: null
+  };
+
+  function KhaninDiagram(element, options) {
+    if (!(this instanceof KhaninDiagram)) return new KhaninDiagram(element, options);
+
+    if (typeof element === 'string') element = document.querySelector(element);
+    if (!element) throw new Error('KhaninDiagram: invalid container element');
+
+    var state = {
+      element: element,
+      wrapper: null,
+      canvas: null,
+      ctx: null,
+      opts: null,
+      layout: null,
+      computed: null,
+      S: 1,
+      hoveredNode: null,
+      animPhase: 0,
+      animRunning: false,
+      rafId: null,
+      lastTs: 0,
+      tooltip: null,
+      destroyed: false
+    };
+    this._state = state;
+
+    // DOM setup
+    element.style.position = element.style.position || 'relative';
+    element.style.width = element.style.width || '100%';
+
+    var wrapper = document.createElement('div');
+    wrapper.style.cssText = 'position:relative;width:100%;';
+    element.appendChild(wrapper);
+    state.wrapper = wrapper;
+
+    var cv = document.createElement('canvas');
+    cv.style.cssText = 'display:block;width:100%;height:100%;cursor:default;';
+    wrapper.appendChild(cv);
+    state.canvas = cv;
+    state.ctx = cv.getContext('2d');
+
+    // Tooltip
+    var tooltip = document.createElement('div');
+    tooltip.style.cssText = 'position:absolute;pointer-events:none;display:none;background:#FAF8F3;border:1px solid #ddd;border-radius:6px;padding:6px 10px;font-size:0.7rem;color:#2A2A2A;box-shadow:0 2px 8px rgba(0,0,0,0.12);z-index:10;white-space:nowrap;font-family:-apple-system,BlinkMacSystemFont,Inter,sans-serif;';
+    wrapper.appendChild(tooltip);
+    state.tooltip = tooltip;
+
+    // Mouse events
+    var self = this;
+    function onMouseMove(e) {
+      if (state.destroyed || !state.computed) return;
+      var rect = cv.getBoundingClientRect();
+      var mx = e.clientX - rect.left;
+      var my = e.clientY - rect.top;
+      var hit = hitTest(mx, my, state.computed);
+
+      state.hoveredNode = hit;
+      cv.style.cursor = hit ? 'pointer' : 'default';
+
+      if (hit && hit !== '__center__') {
+        var nLookup = {};
+        for (var i = 0; i < state.computed.nodes.length; i++) {
+          nLookup[state.computed.nodes[i].id] = state.computed.nodes[i];
+        }
+        var n = nLookup[hit];
+        if (n) {
+          var formatFn = state.opts.format || fmt;
+          var up = n.delta >= 0;
+          var dColor = up ? (state.opts.colors.up||'#2D7A4A') : (state.opts.colors.down||'#C44545');
+          tooltip.innerHTML = '<div style="font-weight:600;margin-bottom:2px;">' + n.label + '</div>' +
+            '<div style="font-size:0.85rem;font-weight:700;">' + formatFn(n.value, n.money) + '</div>' +
+            '<div style="color:'+dColor+';font-size:0.7rem;">' + (up?'\u25B2 +':'\u25BC ') + Math.abs(n.delta).toFixed(1) + '% MoM</div>' +
+            (n.subtitle ? '<div style="color:#8A8478;font-size:0.6rem;margin-top:2px;">'+n.subtitle+'</div>' : '');
+          tooltip.style.display = 'block';
+          var tx = mx + 14;
+          var tw = tooltip.offsetWidth;
+          var rw = wrapper.getBoundingClientRect().width;
+          if (tx + tw > rw - 10) tx = mx - tw - 10;
+          tooltip.style.left = tx + 'px';
+          tooltip.style.top = (my - 10) + 'px';
+        }
+      } else if (hit === '__center__' && state.opts.center) {
+        var c = state.opts.center;
+        var formatFn2 = state.opts.format || fmt;
+        var up2 = c.delta >= 0;
+        var dColor2 = up2 ? (state.opts.colors.up||'#2D7A4A') : (state.opts.colors.down||'#C44545');
+        tooltip.innerHTML = '<div style="font-weight:600;margin-bottom:2px;">'+c.label+'</div>' +
+          '<div style="font-size:0.85rem;font-weight:700;">'+formatFn2(c.value, c.format==='money')+'</div>' +
+          '<div style="color:'+dColor2+';font-size:0.7rem;">'+(up2?'\u25B2 +':'\u25BC ')+Math.abs(c.delta).toFixed(1)+'% MoM</div>';
+        tooltip.style.display = 'block';
+        tooltip.style.left = (mx + 14) + 'px';
+        tooltip.style.top = (my - 10) + 'px';
+      } else {
+        tooltip.style.display = 'none';
+      }
+
+      if (!state.animRunning) render(state);
+    }
+
+    function onMouseLeave() {
+      state.hoveredNode = null;
+      tooltip.style.display = 'none';
+      if (!state.animRunning) render(state);
+    }
+
+    cv.addEventListener('mousemove', onMouseMove);
+    cv.addEventListener('mouseleave', onMouseLeave);
+    state._onMouseMove = onMouseMove;
+    state._onMouseLeave = onMouseLeave;
+
+    // Resize
+    state._resizeTimer = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      state._resizeObs = new ResizeObserver(function() {
+        clearTimeout(state._resizeTimer);
+        state._resizeTimer = setTimeout(function() {
+          if (!state.destroyed) {
+            if (!state.animRunning) render(state);
+          }
+        }, 50);
+      });
+      state._resizeObs.observe(element);
+    }
+
+    // Init
+    this.update(options);
+  }
+
+  KhaninDiagram.prototype.update = function(options) {
+    var state = this._state;
+    state.opts = merge(DEFAULTS, options);
+    state.layout = computeLayout(state.opts);
+
+    if (state.opts.animation && state.opts.animation.enabled) {
+      startAnimation(state);
+    } else {
+      stopAnimation(state);
+      render(state);
+    }
+  };
+
+  KhaninDiagram.prototype.resize = function() {
+    if (!this._state.destroyed) render(this._state);
+  };
+
+  KhaninDiagram.prototype.toSVG = function() {
+    return renderToSVG(this._state);
+  };
+
+  KhaninDiagram.prototype.destroy = function() {
+    var state = this._state;
+    state.destroyed = true;
+    stopAnimation(state);
+    state.canvas.removeEventListener('mousemove', state._onMouseMove);
+    state.canvas.removeEventListener('mouseleave', state._onMouseLeave);
+    if (state._resizeObs) state._resizeObs.disconnect();
+    if (state.wrapper && state.wrapper.parentNode) state.wrapper.parentNode.removeChild(state.wrapper);
+    state.canvas = null; state.ctx = null; state.opts = null;
+  };
+
+  // ─── 16. Export ────────────────────────────────────────────────────────────
+
+  KhaninDiagram.version = VERSION;
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = KhaninDiagram;
+  } else if (typeof define === 'function' && define.amd) {
+    define(function() { return KhaninDiagram; });
+  } else {
+    root.KhaninDiagram = KhaninDiagram;
+  }
+
+})(typeof window !== 'undefined' ? window : this);
+</script>
