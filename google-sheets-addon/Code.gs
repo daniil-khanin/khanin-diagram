@@ -121,15 +121,19 @@ function getDiagramData() {
   }
 
   // ── 2. Auto-detect container & center ──────────────────────────────────────
+  // Container = first node that only appears in "From" (root source)
   var containerName = null;
   for (var fn in fromSet) {
     if (!toSet[fn]) { containerName = fn; break; }
   }
   if (!containerName) containerName = String(data[1][0]).trim();
 
+  // Center = LAST node that only appears in "To" (final destination).
+  // "Last" because users naturally write the final flow last in the table,
+  // and there may be other terminal nodes (merge endpoints) earlier.
   var centerName = null;
   for (var tn in toSet) {
-    if (!fromSet[tn]) { centerName = tn; break; }
+    if (!fromSet[tn]) { centerName = tn; } // keep overwriting → last wins
   }
 
   // Container value & delta
@@ -364,17 +368,20 @@ function generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup)
       var nodesAtD = byDepth[d];
       var t = (d - 1) / Math.max(maxDepth - 1, 1);
 
-      var baseX = -0.50 + t * 0.90;
-      var baseY = ySign * (0.12 + t * 0.38);
+      // X: linear left-to-right with depth
+      var baseX = -0.52 + t * 0.92;
+      // Y: steep rise early (power curve), then plateau
+      //    depth1 → ±0.10, depth2 → ±0.42, depth3 → ±0.50, depth4 → ±0.55
+      var baseY = ySign * (0.10 + 0.45 * Math.pow(Math.max(t, 0), 0.35));
 
       for (var ni = 0; ni < nodesAtD.length; ni++) {
         var xSpread = 0;
         if (nodesAtD.length > 1) {
-          xSpread = (ni - (nodesAtD.length - 1) / 2) * 0.20;
+          xSpread = (ni - (nodesAtD.length - 1) / 2) * 0.22;
         }
         layout[nodesAtD[ni].id] = {
           x: baseX + xSpread,
-          y: baseY + ni * 0.06 * ySign,
+          y: baseY + ni * 0.05 * ySign,
           labelAbove: ySign < 0
         };
       }
@@ -390,7 +397,7 @@ function generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup)
     if (!pos) return;
 
     if (n.group === 'output') {
-      // Output nodes that feed merge nodes → far right
+      // Output nodes that feed merge nodes → far right, y=0
       var children = adj[n.id] || [];
       var feedsMerge = children.some(function(c) { return nodeGroup[c] === 'merge'; });
       if (feedsMerge) {
@@ -398,13 +405,14 @@ function generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup)
         pos.y = 0;
         pos.labelAbove = true;
       }
-      // Otherwise keep depth-based position (entry output node)
     } else if (n.group === 'revenue') {
-      pos.x = Math.max(pos.x, 0.32);
-      pos.y *= 0.35;
+      // Revenue node pulled toward center
+      pos.x = Math.max(pos.x, 0.34);
+      pos.y *= 0.30;
       pos.labelAbove = pos.y <= 0;
     } else if (n.group === 'merge') {
-      pos.y *= 0.88;
+      // Merge nodes slightly pulled toward y=0
+      pos.y *= 0.85;
     }
   });
 
