@@ -51,6 +51,7 @@
     flex: 1;
     overflow: auto;
     padding: 10px;
+    min-height: 500px;
   }
   .error {
     padding: 20px;
@@ -110,6 +111,15 @@
 
     currentConfig = config;
     currentConfig.animation = { enabled: false };
+    currentConfig.colors = config.colors || {
+      ring: '#2A2A2A',
+      background: '#FAF8F3',
+      up: '#2D7A4A',
+      down: '#C44545',
+      text: '#2A2A2A',
+      muted: '#8A8478',
+      centerFill: '#4A7C5C'
+    };
 
     var container = document.getElementById('diagram-container');
     container.innerHTML = '';
@@ -118,8 +128,15 @@
       try { diagram.destroy(); } catch(e) {}
     }
 
-    diagram = KhaninDiagram(container, currentConfig);
-    setStatus('Ready');
+    // Delay to let iframe complete layout before canvas render
+    requestAnimationFrame(function() {
+      diagram = KhaninDiagram(container, currentConfig);
+      // Force repaint after first render
+      requestAnimationFrame(function() {
+        diagram.resize();
+        setStatus('Ready');
+      });
+    });
   }
 
   function onError(err) {
