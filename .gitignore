@@ -1,0 +1,5 @@
+.DS_Store
+*.log
+node_modules/
+marketplace-funnel.js
+khanin-diagram-plan.md
