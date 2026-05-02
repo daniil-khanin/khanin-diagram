@@ -2,6 +2,9 @@
  * Khanin Diagram — Google Sheets Add-on
  * (c) 2026 Daniil Khanin and Khanin Solutions S.L.
  * License: BSL 1.1
+ *
+ * Simple Sankey-like input: one sheet, columns From / To / Value / Delta %
+ * Everything else (zones, groups, layout) is auto-detected.
  */
 
 function onOpen() {
@@ -12,9 +15,7 @@ function onOpen() {
     .addToUi();
 }
 
-function onInstall(e) {
-  onOpen();
-}
+function onInstall(e) { onOpen(); }
 
 function include(filename) {
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
@@ -29,223 +30,412 @@ function showDiagram() {
   SpreadsheetApp.getUi().showModalDialog(html, 'Khanin Diagram');
 }
 
-/**
- * Creates template sheets with example data
- */
+// ─── Template ────────────────────────────────────────────────────────────────
+
 function createTemplate() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('Khanin Diagram');
+  if (!sheet) sheet = ss.insertSheet('Khanin Diagram');
+  sheet.clear();
 
-  // --- Settings sheet ---
-  var settingsSheet = ss.getSheetByName('KD_Settings');
-  if (!settingsSheet) {
-    settingsSheet = ss.insertSheet('KD_Settings');
-  }
-  settingsSheet.clear();
-  settingsSheet.getRange('A1:B1').setValues([['Parameter', 'Value']]).setFontWeight('bold');
-  settingsSheet.getRange('A2:B8').setValues([
-    ['Container Label', 'MAU'],
-    ['Container Value', 2150000],
-    ['Container Delta', -3.2],
-    ['Center Label', 'Revenue'],
-    ['Center Value', 720000],
-    ['Center Delta', 1.2],
-    ['Center Format', 'money']
-  ]);
-  settingsSheet.autoResizeColumns(1, 2);
+  sheet.getRange('A1:D1')
+    .setValues([['From', 'To', 'Value', 'Delta %']])
+    .setFontWeight('bold')
+    .setBackground('#f3f3f3');
 
-  // --- Zones sheet ---
-  var zonesSheet = ss.getSheetByName('KD_Zones');
-  if (!zonesSheet) {
-    zonesSheet = ss.insertSheet('KD_Zones');
-  }
-  zonesSheet.clear();
-  zonesSheet.getRange('A1:E1').setValues([['Zone ID', 'Label', 'Arc Start', 'Arc End', 'Color']]).setFontWeight('bold');
-  zonesSheet.getRange('A2:E3').setValues([
-    ['supply', 'SUPPLY', 180, 360, '#A89B7E'],
-    ['demand', 'DEMAND', 0, 180, '#3A4047']
+  sheet.getRange('A2:D14').setValues([
+    ['MAU',          'MAU',           2150000, -3.2],
+    ['MAU',          'Sellers',         98400, -5.6],
+    ['Sellers',      'Free Sellers',    62700, -7.3],
+    ['Sellers',      'Customers',       35700,  4.5],
+    ['Free Sellers', 'Ads Free',       215300, -2.8],
+    ['Ads Free',     'Leads Free',     612500, -16.4],
+    ['Customers',    'Ads Paid',        44800, -8.9],
+    ['Ads Paid',     'Leads Paid',     488200, -13.7],
+    ['MAU',          'Leads Total',   1100700, -15.3],
+    ['Leads Total',  'Leads Free',     612500,  ''],
+    ['Leads Total',  'Leads Paid',     488200,  ''],
+    ['Ads Paid',     'Transactions',   184600,  2.1],
+    ['Transactions', 'Revenue',        720000,  1.2]
   ]);
-  zonesSheet.autoResizeColumns(1, 5);
 
-  // --- Nodes sheet ---
-  var nodesSheet = ss.getSheetByName('KD_Nodes');
-  if (!nodesSheet) {
-    nodesSheet = ss.insertSheet('KD_Nodes');
-  }
-  nodesSheet.clear();
-  nodesSheet.getRange('A1:F1').setValues([['Node ID', 'Label', 'Value', 'Delta %', 'Zone', 'Group']]).setFontWeight('bold');
-  nodesSheet.getRange('A2:F10').setValues([
-    ['sellers',      'Sellers',      98400,   -5.6,  'supply', 'output'],
-    ['freeSellers',  'Free Sellers', 62700,   -7.3,  'supply', 'supply'],
-    ['adsFree',      'Ads Free',     215300,  -2.8,  'supply', 'supply'],
-    ['leadsFree',    'Leads Free',   612500,  -16.4, 'supply', 'merge'],
-    ['customers',    'Customers',    35700,   4.5,   'demand', 'demand'],
-    ['adsPaid',      'Ads Paid',     44800,   -8.9,  'demand', 'demand'],
-    ['leadsPaid',    'Leads Paid',   488200,  -13.7, 'demand', 'merge'],
-    ['leadsTotal',   'Leads Total',  1100700, -15.3, 'demand', 'output'],
-    ['transactions', 'Transactions', 184600,  2.1,   'demand', 'revenue']
-  ]);
-  nodesSheet.autoResizeColumns(1, 6);
+  // Add note to self-reference rows
+  sheet.getRange('A2').setNote('Self-reference row (From = To) sets the container value and delta');
 
-  // --- Flows sheet ---
-  var flowsSheet = ss.getSheetByName('KD_Flows');
-  if (!flowsSheet) {
-    flowsSheet = ss.insertSheet('KD_Flows');
-  }
-  flowsSheet.clear();
-  flowsSheet.getRange('A1:D1').setValues([['From', 'To', 'Value', 'Group']]).setFontWeight('bold');
-  flowsSheet.getRange('A2:D13').setValues([
-    ['container',   'sellers',      98400,   'supply'],
-    ['sellers',     'freeSellers',  62700,   'supply'],
-    ['sellers',     'customers',    35700,   'demand'],
-    ['freeSellers', 'adsFree',      215300,  'supply'],
-    ['adsFree',     'leadsFree',    612500,  'supply'],
-    ['customers',   'adsPaid',      44800,   'demand'],
-    ['adsPaid',     'leadsPaid',    488200,  'demand'],
-    ['container',   'leadsTotal',   1100700, 'direct'],
-    ['leadsTotal',  'leadsFree',    612500,  'merge'],
-    ['leadsTotal',  'leadsPaid',    488200,  'merge'],
-    ['adsPaid',     'transactions', 184600,  'revenue'],
-    ['transactions','center',       720000,  'revenue']
-  ]);
-  flowsSheet.autoResizeColumns(1, 4);
-
-  // --- Layout sheet ---
-  var layoutSheet = ss.getSheetByName('KD_Layout');
-  if (!layoutSheet) {
-    layoutSheet = ss.insertSheet('KD_Layout');
-  }
-  layoutSheet.clear();
-  layoutSheet.getRange('A1:D1').setValues([['Node ID', 'X', 'Y', 'Label Above']]).setFontWeight('bold');
-  layoutSheet.getRange('A2:D10').setValues([
-    ['sellers',      -0.50,  -0.10, false],
-    ['freeSellers',  -0.24,  -0.42, true],
-    ['adsFree',       0.08,  -0.52, true],
-    ['leadsFree',     0.40,  -0.42, true],
-    ['customers',    -0.24,   0.32, false],
-    ['adsPaid',       0.08,   0.48, false],
-    ['leadsPaid',     0.40,   0.42, false],
-    ['leadsTotal',    0.68,   0.00, true],
-    ['transactions',  0.36,   0.16, true]
-  ]);
-  layoutSheet.autoResizeColumns(1, 4);
+  sheet.autoResizeColumns(1, 4);
 
   SpreadsheetApp.getUi().alert(
     'Template created!\n\n' +
-    'Sheets added: KD_Settings, KD_Zones, KD_Nodes, KD_Flows, KD_Layout\n\n' +
-    'Edit the data, then open: Khanin Diagram → Open Diagram'
+    'Sheet "Khanin Diagram" with example data.\n\n' +
+    'How it works:\n' +
+    '• Each row is a flow: From → To with a Value\n' +
+    '• Row where From = To sets that node\'s own value & delta\n' +
+    '  (e.g. MAU → MAU = 2.15M is the container total)\n' +
+    '• Delta % is optional\n' +
+    '• Container (root) and Center (target) are auto-detected\n\n' +
+    'Edit the data, then: Khanin Diagram → Open Diagram'
   );
 }
 
-/**
- * Reads diagram config from sheets. Called from client-side JS.
- */
+// ─── Data reading & auto-detection ───────────────────────────────────────────
+
 function getDiagramData() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-
-  // Settings
-  var settingsSheet = ss.getSheetByName('KD_Settings');
-  if (!settingsSheet) {
-    return { error: 'Sheet "KD_Settings" not found. Use "Create Template" first.' };
+  var sheet = ss.getSheetByName('Khanin Diagram');
+  if (!sheet) {
+    return { error: 'Sheet "Khanin Diagram" not found. Use "Create Template" first.' };
   }
 
-  var settings = {};
-  var sData = settingsSheet.getDataRange().getValues();
-  for (var i = 1; i < sData.length; i++) {
-    settings[sData[i][0]] = sData[i][1];
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) {
+    return { error: 'No data found. Add rows with From, To, Value columns.' };
   }
 
-  // Zones
-  var zonesSheet = ss.getSheetByName('KD_Zones');
-  var zones = [];
-  if (zonesSheet) {
-    var zData = zonesSheet.getDataRange().getValues();
-    for (var j = 1; j < zData.length; j++) {
-      if (!zData[j][0]) continue;
-      zones.push({
-        id: String(zData[j][0]),
-        label: String(zData[j][1]),
-        arc: [Number(zData[j][2]), Number(zData[j][3])],
-        color: String(zData[j][4] || '#888888')
-      });
+  // ── 1. Parse rows ──────────────────────────────────────────────────────────
+  var metadata = {};   // self-ref rows: name → { value, delta }
+  var rawFlows = [];
+  var fromSet = {};
+  var toSet = {};
+
+  for (var i = 1; i < data.length; i++) {
+    var from = String(data[i][0]).trim();
+    var to   = String(data[i][1]).trim();
+    var val  = Number(data[i][2]) || 0;
+    var dRaw = data[i][3];
+    var delta = (dRaw !== '' && dRaw !== null && dRaw !== undefined) ? Number(dRaw) : null;
+    if (isNaN(delta)) delta = null;
+
+    if (!from || !to) continue;
+
+    if (from === to) {
+      metadata[from] = { value: val, delta: delta || 0 };
+    } else {
+      rawFlows.push({ from: from, to: to, value: val, delta: delta });
+      fromSet[from] = true;
+      toSet[to] = true;
     }
   }
 
-  // Nodes
-  var nodesSheet = ss.getSheetByName('KD_Nodes');
-  var nodes = [];
-  if (nodesSheet) {
-    var nData = nodesSheet.getDataRange().getValues();
-    for (var k = 1; k < nData.length; k++) {
-      if (!nData[k][0]) continue;
-      nodes.push({
-        id: String(nData[k][0]),
-        label: String(nData[k][1]),
-        value: Number(nData[k][2]),
-        delta: Number(nData[k][3]),
-        zone: String(nData[k][4]),
-        group: String(nData[k][5]) || undefined
-      });
+  if (rawFlows.length === 0) {
+    return { error: 'No flow data found. Add rows with From → To → Value.' };
+  }
+
+  // ── 2. Auto-detect container & center ──────────────────────────────────────
+  var containerName = null;
+  for (var fn in fromSet) {
+    if (!toSet[fn]) { containerName = fn; break; }
+  }
+  if (!containerName) containerName = String(data[1][0]).trim();
+
+  var centerName = null;
+  for (var tn in toSet) {
+    if (!fromSet[tn]) { centerName = tn; break; }
+  }
+
+  // Container value & delta
+  var cm = metadata[containerName] || {};
+  var containerValue = cm.value || 0;
+  var containerDelta = cm.delta || 0;
+  if (!containerValue) {
+    rawFlows.forEach(function(f) { if (f.from === containerName) containerValue += f.value; });
+  }
+
+  // Center value & delta
+  var centerValue = 0, centerDelta = 0;
+  if (centerName) {
+    var cenm = metadata[centerName] || {};
+    centerValue = cenm.value || 0;
+    centerDelta = cenm.delta || 0;
+    if (!centerValue) {
+      rawFlows.forEach(function(f) { if (f.to === centerName) centerValue += f.value; });
     }
   }
 
-  // Flows
-  var flowsSheet = ss.getSheetByName('KD_Flows');
-  var flows = [];
-  if (flowsSheet) {
-    var fData = flowsSheet.getDataRange().getValues();
-    for (var m = 1; m < fData.length; m++) {
-      if (!fData[m][0]) continue;
-      flows.push({
-        from: String(fData[m][0]),
-        to: String(fData[m][1]),
-        value: Number(fData[m][2]),
-        group: String(fData[m][3]) || undefined
-      });
+  // Auto-detect money format for center
+  var moneyWords = ['revenue','income','profit','gmv','sales','earning','arpu','money'];
+  var centerFormat = null;
+  if (centerName) {
+    var cl = centerName.toLowerCase();
+    for (var mw = 0; mw < moneyWords.length; mw++) {
+      if (cl.indexOf(moneyWords[mw]) >= 0) { centerFormat = 'money'; break; }
     }
   }
 
-  // Layout
-  var layoutSheet = ss.getSheetByName('KD_Layout');
-  var layout = null;
-  if (layoutSheet) {
-    var lData = layoutSheet.getDataRange().getValues();
-    if (lData.length > 1) {
-      layout = {};
-      for (var p = 1; p < lData.length; p++) {
-        if (!lData[p][0]) continue;
-        layout[String(lData[p][0])] = {
-          x: Number(lData[p][1]),
-          y: Number(lData[p][2]),
-          labelAbove: lData[p][3] === true || String(lData[p][3]).toLowerCase() === 'true'
-        };
+  // ── 3. Build adjacency (preserving table order) ────────────────────────────
+  var adj = {};
+  rawFlows.forEach(function(f) {
+    if (!adj[f.from]) adj[f.from] = [];
+    adj[f.from].push(f.to);
+  });
+
+  // ── 4. BFS depth from container ────────────────────────────────────────────
+  var depth = {};
+  depth[containerName] = 0;
+  var queue = [containerName];
+  var bfsVisited = {};
+  bfsVisited[containerName] = true;
+  while (queue.length > 0) {
+    var cur = queue.shift();
+    var nb = adj[cur] || [];
+    for (var ni = 0; ni < nb.length; ni++) {
+      if (!bfsVisited[nb[ni]]) {
+        bfsVisited[nb[ni]] = true;
+        depth[nb[ni]] = (depth[cur] || 0) + 1;
+        queue.push(nb[ni]);
       }
     }
   }
 
+  // ── 5. Auto-detect zones via DFS coloring ──────────────────────────────────
+  //   At each branching node the FIRST child (table order) → supply,
+  //   second child → demand. This lets the user control sides by row order.
+  var nodeZone = {};
+
+  function dfsColor(node, zone) {
+    if (nodeZone[node] !== undefined) return;
+    if (node === centerName || node === containerName) return;
+    nodeZone[node] = zone;
+    var children = adj[node] || [];
+    var first = true;
+    for (var ci = 0; ci < children.length; ci++) {
+      if (nodeZone[children[ci]] !== undefined || children[ci] === centerName) continue;
+      if (first) {
+        dfsColor(children[ci], zone);
+        first = false;
+      } else {
+        dfsColor(children[ci], zone === 'supply' ? 'demand' : zone);
+      }
+    }
+  }
+
+  var containerChildren = adj[containerName] || [];
+  var firstChild = true;
+  for (var cci = 0; cci < containerChildren.length; cci++) {
+    if (containerChildren[cci] === centerName) continue;
+    dfsColor(containerChildren[cci], firstChild ? 'supply' : 'demand');
+    firstChild = false;
+  }
+
+  // ── 6. Collect all node names (except container & center) ──────────────────
+  var allNodeNames = {};
+  rawFlows.forEach(function(f) {
+    if (f.from !== containerName) allNodeNames[f.from] = true;
+    if (f.to !== centerName)     allNodeNames[f.to]   = true;
+  });
+  delete allNodeNames[containerName];
+
+  // Ensure every node has a zone
+  for (var an in allNodeNames) {
+    if (!nodeZone[an]) nodeZone[an] = 'demand';
+  }
+
+  // ── 7. Detect groups ──────────────────────────────────────────────────────
+  var incomingFrom = {};
+  rawFlows.forEach(function(f) {
+    if (!incomingFrom[f.to]) incomingFrom[f.to] = [];
+    incomingFrom[f.to].push(f.from);
+  });
+
+  var containerDirect = {};
+  rawFlows.forEach(function(f) {
+    if (f.from === containerName) containerDirect[f.to] = true;
+  });
+
+  var nodeGroup = {};
+  for (var gn in allNodeNames) {
+    // Revenue: connects to center
+    var connectsToCenter = false;
+    (adj[gn] || []).forEach(function(t) { if (t === centerName) connectsToCenter = true; });
+    if (connectsToCenter) { nodeGroup[gn] = 'revenue'; continue; }
+
+    // Merge: receives 2+ incoming flows
+    var inc = incomingFrom[gn] || [];
+    if (inc.length >= 2) { nodeGroup[gn] = 'merge'; continue; }
+
+    // Output: direct child of container
+    if (containerDirect[gn]) { nodeGroup[gn] = 'output'; continue; }
+
+    // Default: same as zone
+    nodeGroup[gn] = nodeZone[gn] || 'supply';
+  }
+
+  // ── 8. Node values & deltas ────────────────────────────────────────────────
+  var nodeValues = {};
+  var nodeDeltas = {};
+  rawFlows.forEach(function(f) {
+    if (f.to === centerName) return;
+    if (nodeValues[f.to] === undefined) nodeValues[f.to] = f.value;
+    if (nodeDeltas[f.to] === undefined && f.delta !== null && f.delta !== 0) {
+      nodeDeltas[f.to] = f.delta;
+    }
+  });
+
+  // ── 9. Build nodes array ──────────────────────────────────────────────────
+  var nodes = [];
+  for (var nodeId in allNodeNames) {
+    nodes.push({
+      id:    nodeId,
+      label: nodeId,
+      value: nodeValues[nodeId] || 0,
+      delta: nodeDeltas[nodeId] || 0,
+      zone:  nodeZone[nodeId]  || 'supply',
+      group: nodeGroup[nodeId] || 'supply'
+    });
+  }
+
+  // ── 10. Build flows array ─────────────────────────────────────────────────
+  var flows = [];
+  rawFlows.forEach(function(f) {
+    var fFrom = (f.from === containerName) ? 'container' : f.from;
+    var fTo   = (f.to === centerName)      ? 'center'    : f.to;
+
+    // Flow group detection
+    var fg = 'supply';
+    if (fTo === 'center' || nodeGroup[f.from] === 'revenue') {
+      fg = 'revenue';
+    } else if (fFrom === 'container' && nodeZone[f.to] === 'demand') {
+      fg = 'direct';
+    } else if (nodeGroup[f.from] === 'output' && nodeZone[f.from] === 'demand' && nodeGroup[f.to] === 'merge') {
+      fg = 'merge';
+    } else {
+      fg = nodeZone[f.to] || 'supply';
+    }
+
+    flows.push({ from: fFrom, to: fTo, value: f.value, group: fg });
+  });
+
+  // ── 11. Generate layout ───────────────────────────────────────────────────
+  var layout = generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup);
+
   return {
     container: {
-      label: settings['Container Label'] || 'MAU',
-      value: Number(settings['Container Value']) || 0,
-      delta: Number(settings['Container Delta']) || 0
+      label: containerName,
+      value: containerValue,
+      delta: containerDelta
     },
-    center: {
-      label: settings['Center Label'] || 'Revenue',
-      value: Number(settings['Center Value']) || 0,
-      delta: Number(settings['Center Delta']) || 0,
-      format: settings['Center Format'] || undefined
-    },
-    zones: zones,
-    nodes: nodes,
-    flows: flows,
+    center: centerName ? {
+      label:  centerName,
+      value:  centerValue,
+      delta:  centerDelta,
+      format: centerFormat
+    } : null,
+    zones: [
+      { id: 'supply', label: 'SUPPLY', arc: [180, 360], color: '#A89B7E' },
+      { id: 'demand', label: 'DEMAND', arc: [0, 180],   color: '#3A4047' }
+    ],
+    nodes:  nodes,
+    flows:  flows,
     layout: layout,
     animation: { enabled: false }
   };
 }
 
-/**
- * Inserts SVG as an image into the active sheet.
- * Google Sheets doesn't support SVG directly, so we convert to PNG via Charts.
- */
+// ─── Auto-layout ─────────────────────────────────────────────────────────────
+
+function generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup) {
+  var maxDepth = 1;
+  for (var k in depth) {
+    if (k !== containerName && k !== centerName && depth[k] > maxDepth) maxDepth = depth[k];
+  }
+
+  // Separate by zone, sort by depth
+  var supply = [], demand = [];
+  nodes.forEach(function(n) {
+    (n.zone === 'supply' ? supply : demand).push(n);
+  });
+  supply.sort(function(a, b) { return (depth[a.id] || 1) - (depth[b.id] || 1); });
+  demand.sort(function(a, b) { return (depth[a.id] || 1) - (depth[b.id] || 1); });
+
+  var layout = {};
+
+  function placeZone(nodeList, ySign) {
+    // Group by depth
+    var byDepth = {};
+    nodeList.forEach(function(n) {
+      var d = depth[n.id] || 1;
+      if (!byDepth[d]) byDepth[d] = [];
+      byDepth[d].push(n);
+    });
+
+    var depths = Object.keys(byDepth).map(Number).sort(function(a, b) { return a - b; });
+
+    for (var di = 0; di < depths.length; di++) {
+      var d = depths[di];
+      var nodesAtD = byDepth[d];
+      var t = (d - 1) / Math.max(maxDepth - 1, 1);
+
+      var baseX = -0.50 + t * 0.90;
+      var baseY = ySign * (0.12 + t * 0.38);
+
+      for (var ni = 0; ni < nodesAtD.length; ni++) {
+        var xSpread = 0;
+        if (nodesAtD.length > 1) {
+          xSpread = (ni - (nodesAtD.length - 1) / 2) * 0.20;
+        }
+        layout[nodesAtD[ni].id] = {
+          x: baseX + xSpread,
+          y: baseY + ni * 0.06 * ySign,
+          labelAbove: ySign < 0
+        };
+      }
+    }
+  }
+
+  placeZone(supply, -1);
+  placeZone(demand,  1);
+
+  // Adjust special groups
+  nodes.forEach(function(n) {
+    var pos = layout[n.id];
+    if (!pos) return;
+
+    if (n.group === 'output') {
+      // Output nodes that feed merge nodes → far right
+      var children = adj[n.id] || [];
+      var feedsMerge = children.some(function(c) { return nodeGroup[c] === 'merge'; });
+      if (feedsMerge) {
+        pos.x = 0.68;
+        pos.y = 0;
+        pos.labelAbove = true;
+      }
+      // Otherwise keep depth-based position (entry output node)
+    } else if (n.group === 'revenue') {
+      pos.x = Math.max(pos.x, 0.32);
+      pos.y *= 0.35;
+      pos.labelAbove = pos.y <= 0;
+    } else if (n.group === 'merge') {
+      pos.y *= 0.88;
+    }
+  });
+
+  // Force relaxation — push apart overlapping nodes
+  var ids = Object.keys(layout);
+  for (var iter = 0; iter < 6; iter++) {
+    for (var a = 0; a < ids.length; a++) {
+      for (var b = a + 1; b < ids.length; b++) {
+        var p1 = layout[ids[a]], p2 = layout[ids[b]];
+        var dx = p2.x - p1.x, dy = p2.y - p1.y;
+        var dd = Math.sqrt(dx * dx + dy * dy);
+        if (dd < 0.22 && dd > 0.001) {
+          var push = (0.22 - dd) * 0.3;
+          var nx = dx / dd, ny = dy / dd;
+          p1.x -= nx * push; p1.y -= ny * push;
+          p2.x += nx * push; p2.y += ny * push;
+        }
+      }
+    }
+    for (var c = 0; c < ids.length; c++) {
+      var p = layout[ids[c]];
+      var r = Math.sqrt(p.x * p.x + p.y * p.y);
+      if (r > 0.72) { p.x *= 0.72 / r; p.y *= 0.72 / r; }
+    }
+  }
+
+  return layout;
+}
+
+// ─── Image insertion ─────────────────────────────────────────────────────────
+
 function insertDiagramImage(dataUrl) {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
   var blob = Utilities.newBlob(
