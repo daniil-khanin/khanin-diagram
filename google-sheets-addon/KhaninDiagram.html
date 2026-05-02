@@ -125,7 +125,7 @@
       zoneNodes[zId].push(n);
     }
 
-    // Assign positions
+    // Assign positions — depth-based with power curve for Y
     var positions = {};
     for (var zoneId in zoneNodes) {
       if (!zoneNodes.hasOwnProperty(zoneId)) continue;
@@ -133,58 +133,98 @@
       var zNodes = zoneNodes[zoneId];
       zNodes.sort(function(a, b) { return (depth[a.id] || 1) - (depth[b.id] || 1); });
 
+      var ySign = 1;
+      if (zi) {
+        if (zi.arc[0] >= 180) ySign = -1;
+        else ySign = 1;
+      }
+
+      // Group by depth for horizontal spreading
+      var byDepth = {};
       for (var j = 0; j < zNodes.length; j++) {
-        var node = zNodes[j];
-        var d = depth[node.id] || 1;
-        var x = lerp(-0.55, 0.55, d / maxDepth);
-        var ySign = 1;
-        if (zi) {
-          var mid = (zi.arc[0] + zi.arc[1]) / 2;
-          ySign = (mid > 90 && mid < 270) ? -1 : 1;
-          // supply arc [180,360] → upper half (y<0), demand [0,180] → lower half (y>0)
-          if (zi.arc[0] >= 180) ySign = -1;
-          else ySign = 1;
+        var dd = depth[zNodes[j].id] || 1;
+        if (!byDepth[dd]) byDepth[dd] = [];
+        byDepth[dd].push(zNodes[j]);
+      }
+
+      for (var dKey in byDepth) {
+        if (!byDepth.hasOwnProperty(dKey)) continue;
+        var nodesAtD = byDepth[dKey];
+        var d = Number(dKey);
+        var t = (d - 1) / Math.max(maxDepth - 1, 1);
+
+        // X: linear left-to-right with depth
+        var baseX = -0.52 + t * 0.92;
+        // Y: steep rise early (power curve), then plateau
+        var baseY = ySign * (0.10 + 0.45 * Math.pow(Math.max(t, 0), 0.35));
+
+        for (var ni = 0; ni < nodesAtD.length; ni++) {
+          var xSpread = 0;
+          if (nodesAtD.length > 1) {
+            xSpread = (ni - (nodesAtD.length - 1) / 2) * 0.22;
+          }
+          positions[nodesAtD[ni].id] = {
+            x: baseX + xSpread,
+            y: baseY + ni * 0.05 * ySign
+          };
         }
-        var yStep = 0.25;
-        var yBase = ySign * (0.15 + j * yStep);
-        positions[node.id] = { x: x, y: yBase };
       }
     }
 
-    // Merge nodes → push toward y=0
+    // Adjust special groups
     for (i = 0; i < nodes.length; i++) {
       n = nodes[i];
-      var sources = inDeg[n.id] || [];
-      var srcZones = {};
-      for (var s = 0; s < sources.length; s++) {
-        var sn = nodeMap[sources[s]];
-        if (sn && sn.zone) srcZones[sn.zone] = true;
-      }
-      if (Object.keys(srcZones).length >= 2 && positions[n.id]) {
-        positions[n.id].y *= 0.3;
+      var pos = positions[n.id];
+      if (!pos) continue;
+      var group = n.group || n.zone || 'supply';
+
+      if (group === 'output') {
+        // Output nodes feeding merge → far right, y=0
+        var children = adj[n.id] || [];
+        var feedsMerge = false;
+        for (var ci = 0; ci < children.length; ci++) {
+          var cn = nodeMap[children[ci]];
+          if (cn && (cn.group === 'merge')) feedsMerge = true;
+        }
+        if (feedsMerge) { pos.x = 0.68; pos.y = 0; }
+      } else if (group === 'revenue') {
+        pos.x = Math.max(pos.x, 0.34);
+        pos.y *= 0.30;
+      } else if (group === 'merge') {
+        pos.y *= 0.85;
       }
     }
 
-    // Force relaxation
+    // Force relaxation with zone-aware clamping
     var ids = Object.keys(positions);
-    for (var iter = 0; iter < 3; iter++) {
+    for (var iter = 0; iter < 5; iter++) {
       for (i = 0; i < ids.length; i++) {
         for (var m = i + 1; m < ids.length; m++) {
           var p1 = positions[ids[i]], p2 = positions[ids[m]];
           var dx = p2.x - p1.x, dy = p2.y - p1.y;
-          var dd = Math.sqrt(dx*dx + dy*dy);
-          if (dd < 0.22 && dd > 0.001) {
-            var push = (0.22 - dd) * 0.5;
-            var nx = dx/dd, ny = dy/dd;
-            p1.x -= nx * push; p1.y -= ny * push;
-            p2.x += nx * push; p2.y += ny * push;
+          var dist = Math.sqrt(dx*dx + dy*dy);
+          if (dist < 0.18 && dist > 0.001) {
+            var push = (0.18 - dist) * 0.25;
+            var pnx = dx/dist, pny = dy/dist;
+            p1.x -= pnx * push; p1.y -= pny * push;
+            p2.x += pnx * push; p2.y += pny * push;
           }
         }
       }
+      // Clamp to ring + enforce zone boundaries each iteration
       for (i = 0; i < ids.length; i++) {
         var p = positions[ids[i]];
         var r = Math.sqrt(p.x*p.x + p.y*p.y);
-        if (r > 0.70) { p.x *= 0.70/r; p.y *= 0.70/r; }
+        if (r > 0.72) { p.x *= 0.72/r; p.y *= 0.72/r; }
+
+        var nd = nodeMap[ids[i]];
+        if (!nd) continue;
+        var grp = nd.group || nd.zone || 'supply';
+        if (grp === 'output' || grp === 'revenue') continue;
+        var nZone = nd.zone;
+        var nZi = nZone ? zoneMap[nZone] : null;
+        if (nZi && nZi.arc[0] >= 180 && p.y > -0.08) p.y = -0.08; // supply: stay upper
+        if (nZi && nZi.arc[0] < 180  && p.y <  0.08) p.y =  0.08; // demand: stay lower
       }
     }
 
