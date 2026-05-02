@@ -432,44 +432,43 @@ function generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup,
     }
   });
 
-  // Force relaxation
+  // Build zone lookup for clamping inside relaxation
+  var nodeZoneLookup = {};
+  var nodeGroupLookup = {};
+  nodes.forEach(function(n) {
+    nodeZoneLookup[n.id] = n.zone;
+    nodeGroupLookup[n.id] = n.group;
+  });
+
+  // Force relaxation with zone-aware clamping each iteration
   var ids = Object.keys(layout);
-  for (var iter = 0; iter < 6; iter++) {
+  for (var iter = 0; iter < 5; iter++) {
     for (var a = 0; a < ids.length; a++) {
       for (var b = a + 1; b < ids.length; b++) {
         var p1 = layout[ids[a]], p2 = layout[ids[b]];
         var dx = p2.x - p1.x, dy = p2.y - p1.y;
         var dd = Math.sqrt(dx * dx + dy * dy);
-        if (dd < 0.22 && dd > 0.001) {
-          var push = (0.22 - dd) * 0.3;
+        if (dd < 0.18 && dd > 0.001) {
+          var push = (0.18 - dd) * 0.25;
           var nx = dx / dd, ny = dy / dd;
           p1.x -= nx * push; p1.y -= ny * push;
           p2.x += nx * push; p2.y += ny * push;
         }
       }
     }
+    // Clamp to ring and enforce zone boundaries every iteration
     for (var c = 0; c < ids.length; c++) {
       var p = layout[ids[c]];
       var r = Math.sqrt(p.x * p.x + p.y * p.y);
       if (r > 0.72) { p.x *= 0.72 / r; p.y *= 0.72 / r; }
+
+      var grp = nodeGroupLookup[ids[c]];
+      if (grp === 'output' || grp === 'revenue') continue;
+      var zone = nodeZoneLookup[ids[c]];
+      if (zone === 'supply' && p.y > -0.08) p.y = -0.08;
+      if (zone === 'demand' && p.y <  0.08) p.y =  0.08;
     }
   }
-
-  // ── Zone boundary clamping ─────────────────────────────────────────────────
-  //   Supply nodes must stay in upper half (y < 0),
-  //   demand nodes must stay in lower half (y > 0).
-  //   Exception: output/revenue nodes near y=0 are allowed.
-  nodes.forEach(function(n) {
-    var pos = layout[n.id];
-    if (!pos) return;
-    if (n.group === 'output' || n.group === 'revenue') return; // allow near center
-
-    if (n.zone === 'supply' && pos.y > -0.05) {
-      pos.y = -0.05;
-    } else if (n.zone === 'demand' && pos.y < 0.05) {
-      pos.y = 0.05;
-    }
-  });
 
   // ── Apply manual position overrides ────────────────────────────────────────
   //   User can set X %, Y %, or both in the spreadsheet.
