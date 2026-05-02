@@ -40,7 +40,7 @@ function createTemplate() {
   }
   sheet = ss.insertSheet('Khanin Diagram');
 
-  sheet.getRange('A1:D1')
+  sheet.getRange('A1:F1')
     .setValues([['From', 'To', 'Value', 'Delta %', 'X %', 'Y %']])
     .setFontWeight('bold')
     .setBackground('#f3f3f3');
