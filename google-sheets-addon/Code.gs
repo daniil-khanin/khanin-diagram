@@ -39,30 +39,32 @@ function createTemplate() {
   sheet.clear();
 
   sheet.getRange('A1:D1')
-    .setValues([['From', 'To', 'Value', 'Delta %']])
+    .setValues([['From', 'To', 'Value', 'Delta %', 'X %', 'Y %']])
     .setFontWeight('bold')
     .setBackground('#f3f3f3');
 
-  sheet.getRange('A2:D14').setValues([
-    ['MAU',          'MAU',           2150000, -3.2],
-    ['MAU',          'Sellers',         98400, -5.6],
-    ['Sellers',      'Free Sellers',    62700, -7.3],
-    ['Sellers',      'Customers',       35700,  4.5],
-    ['Free Sellers', 'Ads Free',       215300, -2.8],
-    ['Ads Free',     'Leads Free',     612500, -16.4],
-    ['Customers',    'Ads Paid',        44800, -8.9],
-    ['Ads Paid',     'Leads Paid',     488200, -13.7],
-    ['MAU',          'Leads Total',   1100700, -15.3],
-    ['Leads Total',  'Leads Free',     612500,  ''],
-    ['Leads Total',  'Leads Paid',     488200,  ''],
-    ['Ads Paid',     'Transactions',   184600,  2.1],
-    ['Transactions', 'Revenue',        720000,  1.2]
+  sheet.getRange('A2:F14').setValues([
+    ['MAU',          'MAU',           2150000, -3.2, '', ''],
+    ['MAU',          'Sellers',         98400, -5.6, '', ''],
+    ['Sellers',      'Free Sellers',    62700, -7.3, '', ''],
+    ['Sellers',      'Customers',       35700,  4.5, '', ''],
+    ['Free Sellers', 'Ads Free',       215300, -2.8, '', ''],
+    ['Ads Free',     'Leads Free',     612500, -16.4, '', ''],
+    ['Customers',    'Ads Paid',        44800, -8.9, '', ''],
+    ['Ads Paid',     'Leads Paid',     488200, -13.7, '', ''],
+    ['MAU',          'Leads Total',   1100700, -15.3, '', ''],
+    ['Leads Total',  'Leads Free',     612500,  '', '', ''],
+    ['Leads Total',  'Leads Paid',     488200,  '', '', ''],
+    ['Ads Paid',     'Transactions',   184600,  2.1, '', ''],
+    ['Transactions', 'Revenue',        720000,  1.2, '', '']
   ]);
 
-  // Add note to self-reference rows
+  // Add notes
   sheet.getRange('A2').setNote('Self-reference row (From = To) sets the container value and delta');
+  sheet.getRange('E1').setNote('Optional: X position (-70 to 70). Left = negative, Right = positive. Empty = auto.');
+  sheet.getRange('F1').setNote('Optional: Y position (-70 to 70). Up = negative, Down = positive. Empty = auto.');
 
-  sheet.autoResizeColumns(1, 4);
+  sheet.autoResizeColumns(1, 6);
 
   SpreadsheetApp.getUi().alert(
     'Template created!\n\n' +
@@ -72,6 +74,8 @@ function createTemplate() {
     '• Row where From = To sets that node\'s own value & delta\n' +
     '  (e.g. MAU → MAU = 2.15M is the container total)\n' +
     '• Delta % is optional\n' +
+    '• X % and Y % are optional position overrides (-70 to 70)\n' +
+    '  You can set just X, just Y, or both\n' +
     '• Container (root) and Center (target) are auto-detected\n\n' +
     'Edit the data, then: Khanin Diagram → Open Diagram'
   );
@@ -96,6 +100,8 @@ function getDiagramData() {
   var rawFlows = [];
   var fromSet = {};
   var toSet = {};
+  var manualX = {};    // node name → x override (from X % column)
+  var manualY = {};    // node name → y override (from Y % column)
 
   for (var i = 1; i < data.length; i++) {
     var from = String(data[i][0]).trim();
@@ -105,6 +111,14 @@ function getDiagramData() {
     var delta = (dRaw !== '' && dRaw !== null && dRaw !== undefined) ? Number(dRaw) : null;
     if (isNaN(delta)) delta = null;
 
+    // Read optional X % and Y % columns
+    var xRaw = data[i][4];
+    var yRaw = data[i][5];
+    var xVal = (xRaw !== '' && xRaw !== null && xRaw !== undefined) ? Number(xRaw) : null;
+    var yVal = (yRaw !== '' && yRaw !== null && yRaw !== undefined) ? Number(yRaw) : null;
+    if (xVal !== null && isNaN(xVal)) xVal = null;
+    if (yVal !== null && isNaN(yVal)) yVal = null;
+
     if (!from || !to) continue;
 
     if (from === to) {
@@ -113,6 +127,10 @@ function getDiagramData() {
       rawFlows.push({ from: from, to: to, value: val, delta: delta });
       fromSet[from] = true;
       toSet[to] = true;
+
+      // Store manual positions for the "To" node (first occurrence wins)
+      if (xVal !== null && manualX[to] === undefined) manualX[to] = xVal / 100;
+      if (yVal !== null && manualY[to] === undefined) manualY[to] = yVal / 100;
     }
   }
 
@@ -309,7 +327,7 @@ function getDiagramData() {
   });
 
   // ── 11. Generate layout ───────────────────────────────────────────────────
-  var layout = generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup);
+  var layout = generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup, manualX, manualY);
 
   return {
     container: {
@@ -336,7 +354,10 @@ function getDiagramData() {
 
 // ─── Auto-layout ─────────────────────────────────────────────────────────────
 
-function generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup) {
+function generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup, manualX, manualY) {
+  manualX = manualX || {};
+  manualY = manualY || {};
+
   var maxDepth = 1;
   for (var k in depth) {
     if (k !== containerName && k !== centerName && depth[k] > maxDepth) maxDepth = depth[k];
@@ -353,7 +374,6 @@ function generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup)
   var layout = {};
 
   function placeZone(nodeList, ySign) {
-    // Group by depth
     var byDepth = {};
     nodeList.forEach(function(n) {
       var d = depth[n.id] || 1;
@@ -368,10 +388,7 @@ function generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup)
       var nodesAtD = byDepth[d];
       var t = (d - 1) / Math.max(maxDepth - 1, 1);
 
-      // X: linear left-to-right with depth
       var baseX = -0.52 + t * 0.92;
-      // Y: steep rise early (power curve), then plateau
-      //    depth1 → ±0.10, depth2 → ±0.42, depth3 → ±0.50, depth4 → ±0.55
       var baseY = ySign * (0.10 + 0.45 * Math.pow(Math.max(t, 0), 0.35));
 
       for (var ni = 0; ni < nodesAtD.length; ni++) {
@@ -397,7 +414,6 @@ function generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup)
     if (!pos) return;
 
     if (n.group === 'output') {
-      // Output nodes that feed merge nodes → far right, y=0
       var children = adj[n.id] || [];
       var feedsMerge = children.some(function(c) { return nodeGroup[c] === 'merge'; });
       if (feedsMerge) {
@@ -406,17 +422,15 @@ function generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup)
         pos.labelAbove = true;
       }
     } else if (n.group === 'revenue') {
-      // Revenue node pulled toward center
       pos.x = Math.max(pos.x, 0.34);
       pos.y *= 0.30;
       pos.labelAbove = pos.y <= 0;
     } else if (n.group === 'merge') {
-      // Merge nodes slightly pulled toward y=0
       pos.y *= 0.85;
     }
   });
 
-  // Force relaxation — push apart overlapping nodes
+  // Force relaxation
   var ids = Object.keys(layout);
   for (var iter = 0; iter < 6; iter++) {
     for (var a = 0; a < ids.length; a++) {
@@ -438,6 +452,36 @@ function generateLayout(nodes, depth, containerName, centerName, adj, nodeGroup)
       if (r > 0.72) { p.x *= 0.72 / r; p.y *= 0.72 / r; }
     }
   }
+
+  // ── Zone boundary clamping ─────────────────────────────────────────────────
+  //   Supply nodes must stay in upper half (y < 0),
+  //   demand nodes must stay in lower half (y > 0).
+  //   Exception: output/revenue nodes near y=0 are allowed.
+  nodes.forEach(function(n) {
+    var pos = layout[n.id];
+    if (!pos) return;
+    if (n.group === 'output' || n.group === 'revenue') return; // allow near center
+
+    if (n.zone === 'supply' && pos.y > -0.05) {
+      pos.y = -0.05;
+    } else if (n.zone === 'demand' && pos.y < 0.05) {
+      pos.y = 0.05;
+    }
+  });
+
+  // ── Apply manual position overrides ────────────────────────────────────────
+  //   User can set X %, Y %, or both in the spreadsheet.
+  //   Only the specified axis is overridden; the other stays auto.
+  nodes.forEach(function(n) {
+    var pos = layout[n.id];
+    if (!pos) return;
+
+    if (manualX[n.id] !== undefined) pos.x = manualX[n.id];
+    if (manualY[n.id] !== undefined) {
+      pos.y = manualY[n.id];
+      pos.labelAbove = pos.y < 0;
+    }
+  });
 
   return layout;
 }
