@@ -59,12 +59,12 @@ function createTemplate() {
     zonesSheet = ss.insertSheet('KD_Zones');
   }
   zonesSheet.clear();
-  zonesSheet.getRange('A1:D1').setValues([['Zone ID', 'Label', 'Arc Start', 'Arc End']]).setFontWeight('bold');
-  zonesSheet.getRange('A2:D3').setValues([
-    ['supply', 'SUPPLY', 180, 360],
-    ['demand', 'DEMAND', 0, 180]
+  zonesSheet.getRange('A1:E1').setValues([['Zone ID', 'Label', 'Arc Start', 'Arc End', 'Color']]).setFontWeight('bold');
+  zonesSheet.getRange('A2:E3').setValues([
+    ['supply', 'SUPPLY', 180, 360, '#A89B7E'],
+    ['demand', 'DEMAND', 0, 180, '#3A4047']
   ]);
-  zonesSheet.autoResizeColumns(1, 4);
+  zonesSheet.autoResizeColumns(1, 5);
 
   // --- Nodes sheet ---
   var nodesSheet = ss.getSheetByName('KD_Nodes');
@@ -144,7 +144,8 @@ function getDiagramData() {
       zones.push({
         id: String(zData[j][0]),
         label: String(zData[j][1]),
-        arc: [Number(zData[j][2]), Number(zData[j][3])]
+        arc: [Number(zData[j][2]), Number(zData[j][3])],
+        color: String(zData[j][4] || '#888888')
       });
     }
   }
