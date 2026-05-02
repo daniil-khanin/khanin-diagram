@@ -35,8 +35,10 @@ function showDiagram() {
 function createTemplate() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('Khanin Diagram');
-  if (!sheet) sheet = ss.insertSheet('Khanin Diagram');
-  sheet.clear();
+  if (sheet) {
+    ss.deleteSheet(sheet);
+  }
+  sheet = ss.insertSheet('Khanin Diagram');
 
   sheet.getRange('A1:D1')
     .setValues([['From', 'To', 'Value', 'Delta %', 'X %', 'Y %']])
