@@ -12,10 +12,10 @@ Khanin Diagram visualizes both sides of the business as a single circular flow f
 
 **Use cases:**
 
-- **Classifieds & marketplaces** (Avito, OLX, Craigslist) — free listings vs. paid promotion
-- **Ride-hailing & delivery** (Uber, Bolt, Delivery Club) — drivers vs. riders
-- **EdTech platforms** (Coursera, Skillbox) — free learners vs. paying students
-- **HR & recruiting** (HeadHunter, Indeed) — job seekers vs. employers who pay for access
+- **Classifieds & marketplaces** (OLX, Craigslist, Facebook Marketplace) — free listings vs. paid promotion
+- **Ride-hailing & delivery** (Uber, Bolt, DoorDash) — drivers vs. riders
+- **EdTech platforms** (Coursera, Udemy, Khan Academy) — free learners vs. paying students
+- **HR & recruiting** (Indeed, LinkedIn, Glassdoor) — job seekers vs. employers who pay for access
 - **Freemium SaaS** — free users who create content vs. paying subscribers
 - **Media & advertising** — audience (free) vs. advertisers (paid)
 
