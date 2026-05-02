@@ -4,6 +4,23 @@ Circular flow diagram for unit economics visualization. Standalone JavaScript li
 
 ![Khanin Diagram Example](example.png)
 
+## Why Khanin Diagram?
+
+Two-sided business models share a common pattern: one source of users splits into two groups — one side generates supply, the other pays and generates revenue. Traditional funnels and Sankey diagrams fail to show this circular relationship clearly.
+
+Khanin Diagram visualizes both sides of the business as a single circular flow from a shared user base, making it easy to see how supply and demand interact and where the money comes from.
+
+**Use cases:**
+
+- **Classifieds & marketplaces** (Avito, OLX, Craigslist) — free listings vs. paid promotion
+- **Ride-hailing & delivery** (Uber, Bolt, Delivery Club) — drivers vs. riders
+- **EdTech platforms** (Coursera, Skillbox) — free learners vs. paying students
+- **HR & recruiting** (HeadHunter, Indeed) — job seekers vs. employers who pay for access
+- **Freemium SaaS** — free users who create content vs. paying subscribers
+- **Media & advertising** — audience (free) vs. advertisers (paid)
+
+Any model where one group uses the product for free and the other pays — and both originate from the same user pool — is a fit for this diagram.
+
 ## Features
 
 - Circular layout with supply/demand zones

@@ -3,8 +3,8 @@
  * Circular flow diagram — standalone JS library
  * No dependencies. Canvas + SVG export.
  *
- * (c) 2024–2026
- * License: MIT
+ * (c) 2026 Daniil Khanin and Khanin Solutions S.L.
+ * License: BSL 1.1 (see LICENSE)
  */
 (function(root) {
   'use strict';
